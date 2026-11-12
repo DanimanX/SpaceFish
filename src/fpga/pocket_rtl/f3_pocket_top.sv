@@ -87,7 +87,7 @@ module f3_pocket_top (
 
 	f3_pll u_pll (
 		.refclk    ( clk_74a ),
-		.rst       ( !apf_reset_n ),
+		.rst       ( 1'b0 ),
 		.clk_ram   ( clk_ram ),
 		.clk_sys   ( clk_sys ),
 		.clk_pix   ( clk_pix ),

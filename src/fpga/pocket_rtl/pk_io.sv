@@ -47,21 +47,15 @@ module pk_io #(
 	reg service_check_74 = 1'b0;
 	reg [1:0] boost_list_74 = 2'd0;
 
-	always @(posedge clk_74a or negedge apf_reset_n) begin
-		if (!apf_reset_n) begin
-			reset_action_74  <= 1'b0;
-			service_check_74 <= 1'b0;
-			boost_list_74    <= 2'd0;
-		end else begin
-			reset_action_74 <= 1'b0; // 1-cycle pulse
-			if (bridge_wr) begin
-				if (bridge_addr == INTERACT_BASE) begin
-					reset_action_74 <= bridge_wr_data[0];
-				end else if (bridge_addr == (INTERACT_BASE + 32'h4)) begin
-					service_check_74 <= bridge_wr_data[0];
-				end else if (bridge_addr == (INTERACT_BASE + 32'h8)) begin
-					boost_list_74 <= bridge_wr_data[1:0];
-				end
+	always @(posedge clk_74a) begin
+		reset_action_74 <= 1'b0; // 1-cycle pulse
+		if (bridge_wr) begin
+			if (bridge_addr == INTERACT_BASE) begin
+				reset_action_74 <= bridge_wr_data[0];
+			end else if (bridge_addr == (INTERACT_BASE + 32'h4)) begin
+				service_check_74 <= bridge_wr_data[0];
+			end else if (bridge_addr == (INTERACT_BASE + 32'h8)) begin
+				boost_list_74 <= bridge_wr_data[1:0];
 			end
 		end
 	end
@@ -100,15 +94,10 @@ module pk_io #(
 	reg [15:0] latched_cfg_74 = 16'd0;
 	reg        header_seen_74 = 1'b0;
 
-	always @(posedge clk_74a or negedge apf_reset_n) begin
-		if (!apf_reset_n) begin
-			latched_cfg_74 <= 16'd0;
-			header_seen_74 <= 1'b0;
-		end else begin
-			if (is_header && (bridge_addr[3:0] == 4'h4)) begin
-				latched_cfg_74 <= bridge_wr_data[15:0];
-				header_seen_74 <= 1'b1;
-			end
+	always @(posedge clk_74a) begin
+		if (is_header && (bridge_addr[3:0] == 4'h4)) begin
+			latched_cfg_74 <= bridge_wr_data[15:0];
+			header_seen_74 <= 1'b1;
 		end
 	end
 
@@ -134,7 +123,7 @@ module pk_io #(
 		.data(fifo_din), .wrclk(clk_74a), .wrreq(fifo_wr),
 		.rdclk(clk_sys), .rdreq(fifo_rd), .q(fifo_dout),
 		.rdempty(fifo_empty), .wrfull(fifo_full),
-		.aclr(!apf_reset_n), .eccstatus(), .rdfull(), .rdusedw(), .wrempty(), .wrusedw()
+		.aclr(1'b0), .eccstatus(), .rdfull(), .rdusedw(), .wrempty(), .wrusedw()
 	);
 
 	// Synchronize header arrival & dataslot completion to clk_sys
