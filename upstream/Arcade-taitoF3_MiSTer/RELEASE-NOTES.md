@@ -1,0 +1,334 @@
+# Release notes
+
+What changed in each release, and the rules every release has to meet.
+
+## Rules for a release
+
+These are not optional and they are not judgement calls. A release that
+breaks any of them is not a release.
+
+1. **List the changes in simple, concise terms.** One line per change, in
+   plain language, saying what a player will notice. Not commit messages,
+   not internal names, not the reasoning. If a change is invisible to the
+   player, it does not need a line.
+
+2. **Ship every `.rbf`.** `releases/` must contain the bitstream for this
+   release *and* every earlier one it has ever shipped. Users pin to a
+   working core and roll back when a new one misbehaves; deleting an old
+   bitstream takes that away. `builds/` and `output_files/` are gitignored,
+   so a bitstream that is not copied into `releases/` and committed does not
+   exist for anyone who clones the repository.
+
+3. **Games must boot to the game.** Not the self-test page, not Service
+   Mode. This has to hold even on a card whose saved `Rayforce.CFG` has one
+   of those switched on from an earlier session.
+
+4. **Games must start on level 1.** No zone or level injection in a
+   shipping MRA, and no MRA that pins UART Debug to a diagnostic mode.
+   `releases/` contains only what ships, so `md5sums.txt` describes exactly
+   the shipped set and a clone cannot pick up a core that starts on the wrong
+   level or talks debug over the UART.
+
+5. **Refresh `md5sums.txt`.** Run `python3 tools/check_files.py --update`
+   after changing anything in `releases/`, and `python3 tools/check_files.py`
+   to confirm it passes before committing.
+
+### How to check rules 3 and 4 before releasing
+
+Rule 3, in `Rayforce.sv`: `Self Test` and `Service Mode` are the two OSD
+options that can boot something other than the game. Both must list `Off`
+first in `CONF_STR`, because MiSTer's status word powers up at 0 and takes
+the first entry. That alone is not enough — MiSTer replays a *saved* status
+word over the top of it — so both bits are also armed in RTL (`st_inherit` /
+`sv_inherit`): whatever value a bit carries when the ROM download ends is
+treated as inherited and ignored, and only a deliberate change afterwards
+turns it on. Both power up armed, so an inherited page never shows.
+
+Rule 4, in the MRAs: the start zone is bits `[4:3]` of the config byte on
+ioctl index 1, and `rf_main.sv` only intercepts the level write when those
+bits are non-zero. Decode them for every MRA you are shipping:
+
+```sh
+for f in releases/*.mra releases/experimental/*.mra; do
+  b=$(grep -A2 'index="1"' "$f" | sed -n 's:.*<part>\([0-9A-Fa-f]\{1,2\}\)</part>.*:\1:p' | head -1)
+  [ -z "$b" ] && b=00
+  printf '%-46s byte=0x%-2s zone_inj=%d\n' "$(basename "$f")" "$b" $(( (0x$b >> 3) & 3 ))
+done
+```
+
+`zone_inj` must be 0 for every MRA. The only files allowed to report 1 are
+the ones with `(zone 2)` in the name.
+
+**`python3 tools/check_mra_cfg.py` does this and more, and is the gate to
+run.** It decodes every config byte in every shipped MRA and fails on a
+start zone in a non-debug file, on two different games sharing a game id,
+on a shipping MRA that pins the UART to a debug stream, and on the 12-bit
+palette being claimed by both the MRA and the RTL id table. Both of its
+first two checks were verified against real historical failures before it
+was trusted. Last run 2026-09-08: 39 MRAs, 36 distinct ids, all pass.
+
+Why this exists: every other gate in the project validates a transform --
+the benches feed the RTL a stream captured from MAME and compare the
+output. Config bytes are pure input, so a wrong one renders a different
+game's geometry with every bench still green. On 2026-09-08 nine of
+thirteen generated MRAs had the wrong game id and nothing caught it.
+
+---
+
+## Rayforce_20260917
+
+Build stamp `17204416`.
+
+- **Twin Cobra II's title screen, its fade between attract scenes and the
+  picture on the SCORE RANKING screen draw properly.** They were scrambled
+  blocks of gameplay scenery before. The game has now been played through.
+- **Kaiser Knuckle and Dan-Ku-Ga look better** for the same reason. Reported
+  by a player on this build; not measured picture-by-picture the way Twin
+  Cobra II was.
+- Every other game is untouched. Ray Force's write hash is unchanged and all
+  the frame comparisons are identical to `Rayforce_20260913`.
+- For anyone chasing the Elevator Action Returns seam: the self-test row that
+  was `PF WR : SPR WR` is now **`MIX LN : BUILDS`**, and it should read
+  `01000100`. A lower second half while the picture tears is the cause,
+  counted. See [EAR-SEAM.md](EAR-SEAM.md).
+
+### Why the pictures were scrambled
+
+The playfield tile code was truncated to 15 bits where the F3 uses all 16
+(`rf_video_pf.sv`: `gfx_code <= pf_q[14:0]`; MAME's `get_tile_info` passes
+`tilep[1]` unmasked). A 15-bit code reaches 32,768 tiles of 128 bytes = 4 MB,
+and **four parent sets have a 6 MB tilemap**: Twin Cobra II, Kaiser Knuckle,
+Dan-Ku-Ga and Kirameki Star Road. On those four, every tile numbered 0x8000
+or above fetched the tile 0x8000 below it.
+
+That is why it hid for so long. A game keeps its common gameplay tiles low in
+the ROM and its one-off pictures high, so the fault appeared only on title
+screens, transitions and ranking art -- and all three of these sets had
+already passed "renders and takes coins", which looks at exactly the part
+that still worked. Twin Cobra II's emblem uses codes up to `0x9F64`.
+
+The sprite path was widened to 17 bits when Kaiser Knuckle rendered as
+coloured noise; the playfield path was not widened with it, and that
+asymmetry is the whole defect.
+
+Verified in three places rather than by eye. The Python model is **0 of
+74,240 pixels different from MAME** on all three affected screens. The new
+`make tc2-pipe-all` puts the RTL at **74,240/74,240** on each -- and at
+**5,375/74,240** with the truncation deliberately restored, which is what
+proves the test can fail. On the board, a screenshot of the title screen is
+**0 of 74,240 pixels different from MAME's own frame**. Cost +26 ALMs
+(41,633/41,910, 551/553 M10K); core clocks met at +1.389 ns.
+
+## Rayforce_20260913
+
+Build stamp `13133540`.
+
+- **Flip Analog Out works.** It was in last week's menu but did nothing: turning
+  it on switched rotation off and left the picture exactly as it was. A vertical
+  CRT mounted the other way round can be corrected from the OSD again.
+- Nothing else changes for any game. With the option off, this build behaves
+  exactly as `Rayforce_20260912` did.
+
+### Why it did nothing
+
+The feature was whole and correct; it was simply not plugged in. `Rayforce.sv`
+instantiates `rf_video_pipe` without connecting its `out_flip` input, because
+the 2026-09-11 diagnostic revert -- which pulled the flip machinery out of the
+top level to bisect the Darius Gaiden palette regression -- was never undone
+once the cause turned out to be in `rf_main.sv`. Quartus ties a dangling input
+low and deletes everything downstream of it, so `rf_out_flip`, `rf_ddr_tag_mux`
+and the display buffer were absent from the shipped bitstream entirely: they
+appear **zero** times in `Rayforce_20260912`'s fit report, against hundreds of
+mentions for every other module. Its map report said so in one line nobody
+reads:
+
+```
+; out_flip ; Input ; Warning ; Declared by entity but not connected by instance.
+```
+
+Turning the option on was worse than leaving it off, because `eff_no_rotate`
+still honoured it: rotation went away and nothing was flipped in exchange.
+
+Verified on hardware rather than by eye: six captures in each state with
+Rotate: None so the flip was the only variable, scored against each other.
+**100.0 % of pixels identical when rotated 180 degrees** (87.5 % upright, which
+is what proves the picture is not symmetric), and the board's own `FLIP
+LATE:WLATE` instrument -- hardwired to zero in the previous build, live for the
+first time in this one -- reads `00000000` with the flip on: no display line
+missed its raster, no writer line overran. Cost +307 ALMs and +3 M10K
+(41,607/41,910 and 551/553); core clocks met.
+
+## Rayforce_20260912
+
+- **Darius Gaiden's background objects are the right colours.** The big
+  towers early in the first level were red and gold instead of blue-grey
+  steel, and only corrected themselves when the boss arrived. Fixed.
+- **Composite and S-video CRTs get colour.** The Y/C encoder is compiled in
+  again, paid for by dropping the HPS audio-in stream no arcade core uses.
+- **New: Flip Analog Out.** Turns the raw 15 kHz picture upside down, for a
+  vertical CRT mounted the other way round. Costs one frame of latency while
+  it is on and forces Rotate off. Ray Force and Gunlock players have a
+  zero-latency alternative in the game's own service menu.
+  **CORRECTION (2026-09-13): this did not work in this build.** The option
+  appeared in the menu and turned rotation off, but flipped nothing -- the
+  machinery behind it was left unconnected and Quartus deleted it. Use
+  `Rayforce_20260913`.
+- **Kaiser Knuckle and Dan-Ku-Ga have all six buttons.** Three punches over
+  three kicks, in the standard arcade layout.
+- **Every game exposes four buttons, with one pad layout across the library.**
+  Arabian Magic's Magic button and Command War's third button did nothing
+  before because the MRA only ever declared two.
+- **CPU Speed settings 1-3 no longer freeze the game.** They had frozen every
+  game within a frame since the setting was added.
+- **The Scandoubler Fx menu entry is gone.** The logic behind it was tied off,
+  so it was offering a control that did nothing. MiSTer's own Shadow Mask,
+  Gamma and Scaling Filter still work.
+
+### What the Darius fix actually was
+
+The colours were never corrupt. They were the game's **own palette content
+from a few frames earlier** -- matched byte-for-byte against MAME's dump of
+the frame before the level transition. Zone A entry makes 39 palette-copy
+requests into a 32-entry queue, and the game's own enqueue routine discards
+the excess in silence (ROM 0x167C: `cmpi.w #$20,d2 / bge`, no retry). Which
+requests lose depends on where the frame boundary falls.
+
+A one-cycle ROM-fetch speedup in `rf_main.sv` -- added the same day, and
+whose comment claimed the default CPU speed stayed "bit-identical" -- moved
+that boundary, and the tower palette blocks became the losers. Reverting the
+one line fixes it. The comment was wrong: it covered the wait-state
+qualification added in the same edit, not the fetch path.
+
+Found by bisecting bitstreams that had already been built, which cost no
+compile time: 20260909, yc_10210215 and flip_11083215 render Zone A
+correctly; btn_11111210 and cpu6btn_11120616 do not. That bracketed the cause
+to four files in a three-hour window before a single new build was spent.
+Five theories argued from the source died against the board first, including
+"the CPU is too slow, speed it up" -- the x1.27 setting was already on in a
+captured red frame.
+
+Verified by an automated Zone A capture rather than by eye: the virtual pad
+drives the game to the towers and every screenshot is scored by exact-RGB
+match against the two palette states. 0 stale pixels here against 4,000-7,000
+before.
+
+## Rayforce_20260909
+
+- **Bubble Bobble II and Bubble Memories: the backgrounds and on-screen text
+  are no longer scrambled.** Level tiles were mispositioned and story text was
+  repeated across the screen. Fixes issue #5.
+- **New: Bubble Memories (bb3be alt program)** in `releases/experimental/`, an
+  alternate program ROM set.
+- Nothing else changes for any other game.
+
+Still broken, and not touched by this release: Riding Fight has no sound,
+Grid Seeker's fire button does nothing, Puzzle Bobble 4's character-select art
+is wrong (issue #3), Puzzle Bobble 3 has a flickering first line (issue #4).
+
+Why the Bubble games were broken, and what it cost to fix, is in PIVOT-RAM.md.
+This build uses all 553 block RAMs, so anything added next has to free some.
+
+## Rayforce_20260908b.rbf
+
+Build stamp `08201940`.
+
+- **Nothing changes for any game you can play.** This is `Rayforce_20260908`
+  with the sound-ROM banking put back in correctly, so the published
+  bitstream matches the source in the repository again. Both files play all
+  35 games with sound; `20260908` stays where it is and is still fine to use.
+- The banking is the feature that broke sound a few hours earlier. It now
+  starts on the same bank the real board does, and stays completely out of
+  the way until a game asks for it -- which no shipping game does. Verified
+  on hardware after building: Ray Force and Puzzle Bobble 3 both captured
+  live audio off the board, 4,096 samples with no silence in them.
+- Kirameki Star Road, the game the banking is for, still has no MRA and
+  still does not run.
+- Known problems are unchanged from `Rayforce_20260908` below.
+
+## Rayforce_20260908.rbf
+
+Build stamp `08142400`.
+
+> **A bitstream stamped `08154107` was briefly published here and HAD NO
+> SOUND IN ANY GAME.** If you have it, replace it with this one. The cause was
+> the sound CPU's 0xC20000 window: it was given a bank index that reset to 0
+> where the hardware resets it to 1, so the sound 68000 executed the wrong
+> 128 KB of its own program. Reported from a board within hours -- "installed
+> the 20260908 version, however I didn't get any sound, reverted and got the
+> sound back" -- and this file is now the same build with that change simply
+> absent. The banking it was added for (Kirameki Star Road) is not in this
+> bitstream and Kirameki does not run either way.
+
+- **29 more games run**, taking the core from 6 to 35 of the 38 Taito F3
+  sets. Arkanoid Returns, Grid Seeker, Space Invaders '95, Cleopatra
+  Fortune, Twin Qix, Recalhorn, Quiz Theater, Pop 'n Pop, Gekirindan,
+  Darius Gaiden Extra, Puzzle Bobble 3 and 4, Arabian Magic, Riding Fight,
+  Ring Rage, Land Maker, and the thirteen largest sets including Kaiser
+  Knuckle and Dan-Ku-Ga.
+- **Horizontal games no longer rotate.** Rotating one cost a frame of input
+  latency through MiSTer's framebuffer and showed it at the wrong aspect; a
+  player reported it as lag on Darius Gaiden. The core now decides per game
+  and the OSD's Rotate applies to the vertical ones only.
+- **12-bit colour** for Arabian Magic, Riding Fight and Ring Rage, which
+  store colour differently from every other F3 game.
+- **Sound fixes** for games whose sample ROM is banked differently from Ray
+  Force's: Puzzle Bobble 3 and 4, Land Maker, Kaiser Knuckle, Dan-Ku-Ga,
+  Puchi Carat, Quiz de Hyuuhyuu; and correct banking for Arkanoid Returns,
+  Cleopatra Fortune and Twin Qix.
+- Kirameki Star Road's sound-ROM banking is implemented, but that game still
+  has no MRA and does not run.
+- Known problems in this build, by game:
+  - **Ray Force** still drops sprite rows on the zone 2 boss.
+  - **Darius Gaiden** renders some background objects in the wrong colours
+    until the game rewrites its palette, which it does as the first boss
+    arrives. Reported from play.
+  - **Bubble Memories** asks for the TEST switch on a fresh card; turn on
+    Service Mode in the OSD and reset, once.
+  - **Kirameki Star Road** still does not run and has no MRA.
+  - The 29 games added here have not been played through. They boot, render
+    and take a coin.
+
+## Rayforce_20260907.rbf
+
+Build stamp `07213908`.
+
+- **The sprite corruption is fixed.** Explosions and enemy sprites no longer
+  break into flickering, offset copies of themselves. This was the core's
+  worst and longest-standing defect: nine days, about thirty instruments.
+
+  **What it actually was.** The sprite engine keeps a store of sprite-row
+  records, double-banked so one frame is drawn while the next is built. It
+  was declared as two banks of 12,288 records -- 24,576 words, which needs 15
+  address bits -- but the address was only 14 bits wide, so Quartus built a
+  16,384-word RAM and the top third simply did not exist. Bank 1's records
+  from 4,096 up landed on bank 0's. Any frame with more than 4,096 records
+  had its tail overwrite the other frame's head, so one frame drew a live
+  list and the next drew a half-stale one: two images, offset, flickering.
+
+  That is why it got WORSE when the store was made bigger, and why every
+  simulation passed -- Verilator models all 24,576 words, so the bug existed
+  only on silicon. **The fix is one number:** 8,192 records per bank, so the
+  two banks are exactly the 16,384-word RAM Quartus builds and no address can
+  alias. The cost is that the very heaviest frames now DROP rows instead of
+  corrupting them, which the self-test page counts on `SPR REC : DROP`.
+- Ray Force, Gunlock and Ray Force (Japan) all start on zone 1.
+- Two debug MRAs added that start at zone 2 on purpose, in
+  `releases/experimental/`.
+- Known problem: some sprite rows still drop on the zone 2 boss, so parts of
+  it draw as broken lines. Sprites missing, not corrupted.
+
+## Rayforce_20260831.rbf
+
+- Elevator Action Returns, Bubble Bobble II and Puzzle Bobble 2 run.
+- High scores save. They do not come back on reboot yet.
+- Audio Boost added: the real board is very quiet, and 8x is the default.
+
+## Rayforce_20260828.rbf
+
+First release. Ray Force plays with sound.
+
+---
+
+**The bitstream and the MRAs must come from the same release.** The ROM
+layout changed when this became a general F3 core; mismatched files fail the
+`ROM BYTES` self-test row and show wrong graphics.

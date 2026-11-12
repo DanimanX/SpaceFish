@@ -1,0 +1,44 @@
+# SpaceFish (Taito F3 System) Pocket build: source list.
+
+# ---- core RTL (TG68K 68020/68000, F3 motherboard, sound & video)
+set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) rtl/tg68k/TG68K_Pack.vhd ]
+set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) rtl/tg68k/TG68K_ALU.vhd ]
+set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) rtl/tg68k/TG68KdotC_Kernel.vhd ]
+
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_bram.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_bram_be.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_bram_dc.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_bram_tdp.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_font8x8.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_gfx_bus.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_video_line.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_video_pf.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_video_mix.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_video_pipe.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_video_pivot.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_video_spr_list.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_spr_gfx_bus.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_spr_ch_share.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_video_spr.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_es5505.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_smp_bus.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_mb87078.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_es5510_host.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_sound_main.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_main.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_eeprom_93c46.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_pivot_bus.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_prog_bus.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rf_sdram.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/rayforce_video.sv ]
+
+# ---- Pocket top (this port)
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/f3_pll.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/pk_io.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/f3_pocket_top.sv ]
+
+# ---- APF core top
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) core/core_top.v ]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) core/core_bridge_cmd.v ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) core/sound_i2s.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) core/sync_fifo.sv ]

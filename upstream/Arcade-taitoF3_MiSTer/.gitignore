@@ -1,0 +1,75 @@
+# ROMs never enter git
+*.zip
+*.rom
+*.bin
+
+# build noise
+output_files/
+db/
+incremental_db/
+*.log
+
+# local tooling
+.venv/
+screenshots/
+__pycache__/
+
+# MAME video oracle: VRAM dumps, gfx region dumps and reference frames.
+# Regenerate with tools/oracle_f3dump.lua -- see ROADMAP Phase 2.
+dump/
+snap/
+rtl/rf_build_stamp.vh
+
+# Verilator bench build products
+sim/obj_dir/
+sim/fetched.txt
+sim/line_out.txt
+sim/line_ref.txt
+sim/pf_out*.txt
+sim/pf_ref*.txt
+sim/mix_out*.txt
+sim/mix_ref*.txt
+sim/pipe_out*.ppm
+sim/pipe_ref*.txt
+sim/spr_ref*.txt
+builds/
+
+# Quartus crash reports / pin dumps / programmer files
+cr_ie_info.json
+c5_pin_model_dump.txt
+jtag.cdf
+
+# generated bench references (es5505_model.py --raw, gen_spr_fb_ref.py)
+sim/es5505_ref*.raw
+sim/spr_fb_ref*.txt
+sim/spr_fetched.txt
+
+# ---------------------------------------------------------------------------
+# Kept out of the published repository (2026-08-28, release prep)
+# ---------------------------------------------------------------------------
+# MAME write-stream traces: 334 MB of them, and rf_rd.tr alone is over
+# GitHub's 100 MB per-file limit. Regenerate with tools/oracle_*.lua.
+*.tr
+
+# MAME source read as the reference for this core. Not ours to redistribute,
+# and a reader does not need it -- the comments cite file and function.
+reference/
+
+# Quartus programmer / pin dumps and the generated build id
+jtag.cdf
+c5_pin_model_dump.txt
+build_id.v
+
+# MiSTer SD-card runtime artefacts written by the board, not source
+cfg/
+snap/
+
+# Debug-only MRAs: these force UART Debug to a diagnostic mode via the index-2
+# config byte (see "Darius Gaiden (write ring)"). They are bring-up tools, not
+# releases -- a player loading one gets a core with its debug channel pinned.
+# Keep them out of the repo entirely.
+# Debug-only MRAs live here, OUTSIDE releases/, so releases/ contains only
+# what ships and md5sums.txt describes exactly that. These force UART Debug to
+# a diagnostic mode or inject a start zone via the index-2 config byte: they
+# are bring-up tools, and a player loading one gets a core behaving oddly.
+debug-mra/

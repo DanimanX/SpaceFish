@@ -1,0 +1,679 @@
+// f3_pocket_top: Taito F3 System top-level for Analogue Pocket
+//
+// Replaces MiSTer emu.sv / sys_top.v with the Analogue Pocket Framework
+// (APF) interface, driving:
+//   - 64 MB SDR SDRAM for game ROMs, tiles, sprites, sound samples, and pivot RAM
+//   - Cellular PSRAM 0 for the sprite framebuffer (replacing MiSTer DDR3)
+//   - APF Digital Video (320x224 / 320x240 RGB 24-bit)
+//   - APF 48 kHz Stereo I2S Audio
+//   - APF Controller / interact.json DIPs & resets
+//
+`default_nettype none
+
+module f3_pocket_top (
+	input  wire        clk_74a,
+	input  wire        apf_reset_n,
+
+	// APF bridge bus
+	input  wire [31:0] bridge_addr,
+	input  wire        bridge_wr,
+	input  wire [31:0] bridge_wr_data,
+
+	// APF pad
+	input  wire [31:0] pad_key,
+	input  wire        apf_dataslot_complete,
+
+	// Video out to APF scaler
+	output wire [23:0] video_rgb,
+	output wire        video_rgb_clock,
+	output wire        video_rgb_clock_90,
+	output wire        video_de,
+	output wire        video_skip,
+	output wire        video_vs,
+	output wire        video_hs,
+
+	// Audio out to APF I2S DAC
+	output wire        audio_mclk,
+	output wire        audio_lrck,
+	output wire        audio_dac,
+
+	// SDR SDRAM (512 Mbit / 64 MB)
+	output wire [12:0] dram_a,
+	output wire [1:0]  dram_ba,
+	inout  wire [15:0] dram_dq,
+	output wire [1:0]  dram_dqm,
+	output wire        dram_clk,
+	output wire        dram_cke,
+	output wire        dram_ras_n,
+	output wire        dram_cas_n,
+	output wire        dram_we_n,
+
+	// Cellular PSRAM 0 (16 MB, sprite framebuffer)
+	output wire [21:16] cram0_a,
+	inout  wire [15:0]  cram0_dq,
+	input  wire         cram0_wait,
+	output wire         cram0_clk,
+	output wire         cram0_adv_n,
+	output wire         cram0_cre,
+	output wire         cram0_ce0_n,
+	output wire         cram0_ce1_n,
+	output wire         cram0_oe_n,
+	output wire         cram0_we_n,
+	output wire         cram0_ub_n,
+	output wire         cram0_lb_n,
+
+	output wire        boot_done,
+	output wire        pll_locked_o
+);
+
+	assign video_skip = 1'b0;
+
+	// -------------------------------------------------------------------------
+	// 1. Clocks
+	// -------------------------------------------------------------------------
+	wire clk_ram;         // 97.03 MHz (SDRAM)
+	wire clk_sys;         // 53.37 MHz (Core system)
+	wire clk_pix;         //  6.67 MHz (Pixel clock)
+	wire clk_pix_90;      //  6.67 MHz (+90 deg)
+	wire pll_locked;
+
+	f3_pll u_pll (
+		.refclk    ( clk_74a ),
+		.rst       ( !apf_reset_n ),
+		.clk_ram   ( clk_ram ),
+		.clk_sys   ( clk_sys ),
+		.clk_pix   ( clk_pix ),
+		.clk_pix_90( clk_pix_90 ),
+		.locked    ( pll_locked )
+	);
+
+	assign video_rgb_clock    = clk_pix;
+	assign video_rgb_clock_90 = clk_pix_90;
+	assign pll_locked_o       = pll_locked;
+
+	// -------------------------------------------------------------------------
+	// 2. APF I/O Adapter (pk_io)
+	// -------------------------------------------------------------------------
+	wire [127:0] status;
+	wire [31:0]  joystick_0;
+	wire [31:0]  joystick_1;
+	wire         core_reset_btn;
+	wire         service_mode;
+	wire [1:0]   audio_boost;
+
+	wire         ioctl_download;
+	wire         ioctl_wr;
+	wire [7:0]   ioctl_index;
+	wire [26:0]  ioctl_addr;
+	wire [15:0]  ioctl_dout;
+	wire         ioctl_wait;
+
+	pk_io u_pk_io (
+		.clk_74a        ( clk_74a ),
+		.apf_reset_n    ( apf_reset_n ),
+		.bridge_addr    ( bridge_addr ),
+		.bridge_wr      ( bridge_wr ),
+		.bridge_wr_data ( bridge_wr_data ),
+		.pad_key        ( pad_key ),
+
+		.clk_sys        ( clk_sys ),
+		.pll_locked     ( pll_locked ),
+		.status         ( status ),
+		.joystick_0     ( joystick_0 ),
+		.joystick_1     ( joystick_1 ),
+		.core_reset_btn ( core_reset_btn ),
+		.service_mode   ( service_mode ),
+		.audio_boost    ( audio_boost ),
+
+		.ioctl_download ( ioctl_download ),
+		.ioctl_wr       ( ioctl_wr ),
+		.ioctl_index    ( ioctl_index ),
+		.ioctl_addr     ( ioctl_addr ),
+		.ioctl_dout     ( ioctl_dout ),
+		.ioctl_wait     ( ioctl_wait ),
+		.boot_done      ( boot_done )
+	);
+
+	wire reset = !pll_locked | core_reset_btn;
+	wire bus_reset = reset;
+
+	// -------------------------------------------------------------------------
+	// 3. Game Config Register Latch
+	// -------------------------------------------------------------------------
+	reg [15:0] game_cfg = 16'd0;
+	always @(posedge clk_sys) begin
+		if (reset) game_cfg <= 16'd0;
+		else if (ioctl_wr && ioctl_index == 8'd1) game_cfg[7:0]  <= ioctl_dout[7:0];
+		else if (ioctl_wr && ioctl_index == 8'd2) game_cfg[15:8] <= ioctl_dout[7:0];
+	end
+
+	wire [1:0] cfg_vis    = game_cfg[1:0];
+	wire       cfg_extend = ~game_cfg[2];
+	wire [5:0] cfg_game   = {game_cfg[10:8], game_cfg[5], game_cfg[7:6]};
+	wire       cfg_map    = game_cfg[12];
+	wire       cfg_pal12  = game_cfg[13];
+
+	wire [26:1] map_tile_lo = cfg_map ? 26'h0C80000 : 26'h440000;
+	wire [26:1] map_tile_hi = cfg_map ? 26'h0F80000 : 26'h640000;
+	wire [26:1] map_sgfx_lo = cfg_map ? 26'h0280000 : 26'h140000;
+	wire [26:1] map_sgfx_hi = cfg_map ? 26'h0900000 : 26'h340000;
+	wire [26:1] map_smp     = cfg_map ? 26'h1100000 : 26'h740000;
+
+	// -------------------------------------------------------------------------
+	// 4. SDRAM Controller & Direct Download Loader
+	// -------------------------------------------------------------------------
+	wire [26:1] ch1_addr, ch2_addr, ch4_addr, ch5_addr, ch6_addr, ch7_addr, ch8_addr;
+	wire [63:0] ch1_dout, ch2_dout, ch4_dout, ch5_dout, ch6_dout, ch7_dout, ch8_dout;
+	wire        ch1_req, ch1_ready, ch2_req, ch2_ready;
+	wire        ch4_req, ch4_ready, ch5_req, ch5_ready;
+	wire        ch6_req, ch6_ready, ch7_req, ch7_ready;
+	wire [15:0] ch8_din;
+	wire  [1:0] ch8_be;
+	wire        ch8_rnw, ch8_req, ch8_ready;
+
+	wire [26:1] ch3_addr_pb;
+	wire [63:0] ch3_dout;
+	wire [15:0] ch3_din_pb;
+	wire  [1:0] ch3_be_pb;
+	wire        ch3_req_pb, ch3_rnw_pb, ch3_ready;
+
+	reg         ld_req;
+	reg  [26:1] ld_addr;
+	reg  [15:0] ld_din;
+	reg         ld_busy;
+	reg         ld_done_t = 1'b0;
+
+	always @(posedge clk_ram) if (ch3_ready && ioctl_download) ld_done_t <= ~ld_done_t;
+	reg ld_d1, ld_d2, ld_d3;
+	always @(posedge clk_sys) begin
+		ld_d1 <= ld_done_t; ld_d2 <= ld_d1; ld_d3 <= ld_d2;
+	end
+	wire ld_done_edge = ld_d2 ^ ld_d3;
+	wire dl_word = ioctl_wr && (ioctl_index == 8'd0);
+
+	always @(posedge clk_sys) begin
+		if (!pll_locked) begin
+			ld_req <= 1'b0; ld_busy <= 1'b0;
+		end else begin
+			if (dl_word && !ld_busy) begin
+				ld_addr <= ioctl_addr[26:1];
+				ld_din  <= (ioctl_addr < 27'h200000) ? {ioctl_dout[7:0], ioctl_dout[15:8]} : ioctl_dout;
+				ld_req  <= 1'b1;
+				ld_busy <= 1'b1;
+			end else if (ld_busy && ld_done_edge) begin
+				ld_req  <= 1'b0;
+				ld_busy <= 1'b0;
+			end
+		end
+	end
+
+	assign ioctl_wait = ld_busy;
+
+	wire dram_dqml, dram_dqmh;
+	assign dram_dqm = {dram_dqmh, dram_dqml};
+
+	sdram u_sdram (
+		.init       ( !pll_locked ),
+		.clk        ( clk_ram ),
+		.doRefresh  ( 1'b0 ),
+		.SDRAM_DQ   ( dram_dq ),
+		.SDRAM_A    ( dram_a ),
+		.SDRAM_DQML ( dram_dqml ),
+		.SDRAM_DQMH ( dram_dqmh ),
+		.SDRAM_BA   ( dram_ba ),
+		.SDRAM_nCS  ( ),
+		.SDRAM_nWE  ( dram_we_n ),
+		.SDRAM_nRAS ( dram_ras_n ),
+		.SDRAM_nCAS ( dram_cas_n ),
+		.SDRAM_CKE  ( dram_cke ),
+		.SDRAM_CLK  ( dram_clk ),
+
+		.ch1_addr   ( ch1_addr ),
+		.ch1_dout   ( ch1_dout ),
+		.ch1_req    ( ch1_req ),
+		.ch1_ready  ( ch1_ready ),
+
+		.ch2_addr   ( ch2_addr ),
+		.ch2_dout   ( ch2_dout ),
+		.ch2_req    ( ch2_req ),
+		.ch2_ready  ( ch2_ready ),
+
+		.ch3_addr   ( ioctl_download ? ld_addr : ch3_addr_pb ),
+		.ch3_dout   ( ch3_dout ),
+		.ch3_din    ( ioctl_download ? ld_din : ch3_din_pb ),
+		.ch3_be     ( ioctl_download ? 2'b11 : ch3_be_pb ),
+		.ch3_req    ( ioctl_download ? ld_req : ch3_req_pb ),
+		.ch3_rnw    ( ioctl_download ? 1'b0 : ch3_rnw_pb ),
+		.ch3_ready  ( ch3_ready ),
+
+		.ch4_addr   ( ch4_addr ),
+		.ch4_dout   ( ch4_dout ),
+		.ch4_req    ( ch4_req ),
+		.ch4_ready  ( ch4_ready ),
+
+		.ch5_addr   ( ch5_addr ),
+		.ch5_dout   ( ch5_dout ),
+		.ch5_req    ( ch5_req ),
+		.ch5_ready  ( ch5_ready ),
+
+		.ch6_addr   ( ch6_addr ),
+		.ch6_dout   ( ch6_dout ),
+		.ch6_req    ( ch6_req ),
+		.ch6_ready  ( ch6_ready ),
+
+		.ch7_addr   ( ch7_addr ),
+		.ch7_dout   ( ch7_dout ),
+		.ch7_req    ( ch7_req ),
+		.ch7_ready  ( ch7_ready ),
+
+		.ch8_addr   ( ch8_addr ),
+		.ch8_din    ( ch8_din ),
+		.ch8_be     ( ch8_be ),
+		.ch8_rnw    ( ch8_rnw ),
+		.ch8_dout   ( ch8_dout ),
+		.ch8_req    ( ch8_req ),
+		.ch8_ready  ( ch8_ready )
+	);
+
+	// -------------------------------------------------------------------------
+	// 5. Cellular PSRAM 0 Interface for Sprite Framebuffer
+	// -------------------------------------------------------------------------
+	// The sprite framebuffer (rf_spr_fb) needs 320 KB (40,960 64-bit words).
+	// On Analogue Pocket, cram0 (16 MB PSRAM) is dedicated to it!
+	wire  [7:0] fb_burstcnt;
+	wire [28:0] fb_addr;
+	wire [63:0] fb_din, fb_dout;
+	wire  [7:0] fb_be;
+	wire        fb_we, fb_rd, fb_busy, fb_dout_ready;
+
+	// Simple bridge from 64-bit fb_* transactions to 16-bit PSRAM PHY
+	reg [1:0] cram_step = 2'd0;
+	reg       cram_active = 1'b0;
+
+	assign cram0_adv_n = 1'b1;
+	assign cram0_cre   = 1'b0;
+	assign cram0_ce1_n = 1'b1; // die 1 unused
+	assign cram0_clk   = clk_sys;
+
+	// Direct synchronous PSRAM burst adapter
+	assign cram0_ce0_n = !cram_active;
+	assign cram0_oe_n  = !(cram_active && fb_rd);
+	assign cram0_we_n  = !(cram_active && fb_we);
+	assign cram0_ub_n  = 1'b0;
+	assign cram0_lb_n  = 1'b0;
+	assign cram0_a     = fb_addr[21:16];
+
+	assign fb_busy       = cram_active;
+	assign fb_dout_ready = cram_active && fb_rd && (cram_step == 2'd3);
+
+	always @(posedge clk_sys or posedge reset) begin
+		if (reset) begin
+			cram_active <= 1'b0;
+			cram_step   <= 2'd0;
+		end else begin
+			if (!cram_active) begin
+				if (fb_we || fb_rd) begin
+					cram_active <= 1'b1;
+					cram_step   <= 2'd0;
+				end
+			end else begin
+				cram_step <= cram_step + 2'd1;
+				if (cram_step == 2'd3) begin
+					cram_active <= 1'b0;
+				end
+			end
+		end
+	end
+
+	// -------------------------------------------------------------------------
+	// 6. Taito F3 Motherboard (rf_main) & Video Pipeline (vpipe)
+	// -------------------------------------------------------------------------
+	wire cpu_reset = reset | ioctl_download;
+	wire [21:1] cpu_prog_addr;
+	wire        cpu_prog_req;
+	wire [15:0] prog_data;
+	wire        prog_valid;
+
+	rf_prog_bus u_prog_bus (
+		.clk_cpu   ( clk_sys ),
+		.reset     ( bus_reset ),
+		.addr      ( cpu_prog_addr ),
+		.req       ( cpu_prog_req ),
+		.data      ( prog_data ),
+		.valid     ( prog_valid ),
+		.dl_wr     ( 1'b0 ),
+		.dl_addr   ( 21'd0 ),
+		.dl_data   ( 16'd0 ),
+		.dl_wait   ( ),
+		.clk_ram   ( clk_ram ),
+		.ch_addr   ( ch3_addr_pb ),
+		.ch_dout   ( ch3_dout ),
+		.ch_req    ( ch3_req_pb ),
+		.ch_ready  ( ch3_ready ),
+		.ch_din    ( ch3_din_pb ),
+		.ch_be     ( ch3_be_pb ),
+		.ch_rnw    ( ch3_rnw_pb )
+	);
+
+	// Video wires
+	wire [15:0] vctrl0, vctrl1;
+	wire [11:0] v_pal_addr;   wire [15:0] v_pal_q;
+	wire [14:0] v_pf_addr;    wire [15:0] v_pf_q;
+	wire [12:0] v_text_addr;  wire [15:0] v_text_q;
+	wire [11:0] v_char_addr;  wire [15:0] v_char_q;
+	wire  [7:0] v_line_addr;  wire [15:0] v_line_q;
+	wire [14:0] v_pivot_addr; wire [15:0] v_pivot_q;
+	wire  [9:0] v_spr_addr;   wire [15:0] v_spr_q;
+	wire        spr_wr_stb;
+
+	// Sound wires
+	wire  [9:0] snd_dp_addr;
+	wire [15:0] snd_dp_wdata, snd_dp_q;
+	wire        snd_dp_wren;
+	wire  [1:0] snd_dp_be;
+	wire        snd_reset;
+	wire [2:0]  snd_bank;
+	wire        snd_bank_en;
+
+	wire vbl_rise, hblank, vblank;
+	wire [2:0] vid_div;
+	wire [8:0] vid_hcnt, vid_vcnt;
+
+	rf_main u_main (
+		.clk        ( clk_sys ),
+		.reset      ( cpu_reset ),
+		.prog_addr  ( cpu_prog_addr ),
+		.prog_req   ( cpu_prog_req ),
+		.prog_data  ( prog_data ),
+		.prog_valid ( prog_valid ),
+
+		.vbl_rise   ( vbl_rise ),
+		.j0         ( joystick_0[15:0] ),
+		.j1         ( joystick_1[15:0] ),
+		.six_button ( 1'b1 ),
+		.pause      ( 1'b0 ),
+		.test_sw    ( service_mode ),
+		.nv_wr      ( ), .nv_addr ( ), .nv_data ( ),
+		.hs_pause   ( 1'b0 ), .hs_addr ( 16'd0 ), .hs_wdata ( 16'd0 ),
+		.hs_be      ( 2'b00 ), .hs_we ( 1'b0 ), .hs_q ( ),
+		.nv_sv_addr ( 6'd0 ), .nv_sv_data ( ), .nv_wrote ( ),
+
+		.ctrl0      ( vctrl0 ),
+		.ctrl1      ( vctrl1 ),
+
+		.v_pal_addr ( v_pal_addr ),   .v_pal_q ( v_pal_q ),
+		.v_pf_addr  ( v_pf_addr ),    .v_pf_q  ( v_pf_q ),
+		.v_text_addr( v_text_addr ),  .v_text_q( v_text_q ),
+		.v_char_addr( v_char_addr ),  .v_char_q( v_char_q ),
+		.v_line_addr( v_line_addr ),  .v_line_q( v_line_q ),
+		.v_pivot_addr( v_pivot_addr ),.v_pivot_q( v_pivot_q ),
+		.v_spr_addr ( v_spr_addr ),   .v_spr_q ( v_spr_q ),
+
+		.wr_count   ( ), .wr_hash ( ), .last_pc ( ), .trap_oor ( ),
+		.frame_cnt  ( ), .irq2_cnt ( ), .irq3_cnt ( ),
+		.pf_wr_cnt  ( ), .spr_wr_cnt ( ), .spr_wr_stb ( spr_wr_stb ),
+		.pal_wr_cnt ( ), .pal_wr_hi ( ), .pal_wr_lo ( ), .line_wr_cnt ( ),
+		.vid_vcnt   ( vid_vcnt ), .vctrl_wr_dbg ( ),
+		.cpu_speed  ( 3'd0 ), .cpu_spin ( ),
+		.zone_inj   ( 2'd0 ),
+		.txt_wr_cnt ( ),
+		.irq2_rate  ( ), .irq3_rate ( ), .irq_rate_valid ( ),
+
+		.ring_raddr ( 11'd0 ), .ring_rdata ( ), .ring_wptr ( ), .ring_full ( ),
+		.snd_dp_addr( snd_dp_addr ), .snd_dp_wdata( snd_dp_wdata ), .snd_dp_wren( snd_dp_wren ),
+		.snd_dp_be  ( snd_dp_be ),   .snd_dp_q    ( snd_dp_q ),
+		.snd_reset  ( snd_reset ),
+		.ring_ext_sel ( 1'b0 ), .ring_arm_en ( 1'b0 ), .ring_ext_we ( 1'b0 ), .ring_ext_data ( 56'd0 ),
+		.pivot_wr_cnt( ),
+		.snd_bank_o ( snd_bank ), .snd_bank_en_o( snd_bank_en )
+	);
+
+	// Sprite fetch bus sharing
+	wire [26:1] spr_a_lo_addr, spr_a_hi_addr, spr_b_lo_addr, spr_b_hi_addr;
+	wire [63:0] spr_a_lo_dout, spr_a_hi_dout, spr_b_lo_dout, spr_b_hi_dout;
+	wire        spr_a_lo_req, spr_a_lo_ready, spr_a_hi_req, spr_a_hi_ready;
+	wire        spr_b_lo_req, spr_b_lo_ready, spr_b_hi_req, spr_b_hi_ready;
+
+	rf_spr_ch_share spr_ch_share_a (
+		.clk_ram(clk_ram),
+		.a_lo_addr(spr_a_lo_addr), .a_lo_dout(spr_a_lo_dout), .a_lo_req(spr_a_lo_req), .a_lo_ready(spr_a_lo_ready),
+		.a_hi_addr(spr_a_hi_addr), .a_hi_dout(spr_a_hi_dout), .a_hi_req(spr_a_hi_req), .a_hi_ready(spr_a_hi_ready),
+		.b_lo_addr(26'd0), .b_lo_dout(), .b_lo_req(1'b0), .b_lo_ready(),
+		.b_hi_addr(26'd0), .b_hi_dout(), .b_hi_req(1'b0), .b_hi_ready(),
+		.ch_addr(ch4_addr), .ch_dout(ch4_dout), .ch_req(ch4_req), .ch_ready(ch4_ready)
+	);
+
+	rf_spr_ch_share spr_ch_share_b (
+		.clk_ram(clk_ram),
+		.a_lo_addr(spr_b_lo_addr), .a_lo_dout(spr_b_lo_dout), .a_lo_req(spr_b_lo_req), .a_lo_ready(spr_b_lo_ready),
+		.a_hi_addr(spr_b_hi_addr), .a_hi_dout(spr_b_hi_dout), .a_hi_req(spr_b_hi_req), .a_hi_ready(spr_b_hi_ready),
+		.b_lo_addr(26'd0), .b_lo_dout(), .b_lo_req(1'b0), .b_lo_ready(),
+		.b_hi_addr(26'd0), .b_hi_dout(), .b_hi_req(1'b0), .b_hi_ready(),
+		.ch_addr(ch7_addr), .ch_dout(ch7_dout), .ch_req(ch7_req), .ch_ready(ch7_ready)
+	);
+
+	// Video Pipeline
+	wire [23:0] game_rgb;
+	rf_video_pipe u_vpipe (
+		.clk          ( clk_sys ),
+		.reset        ( reset ),
+		.clk_ram      ( clk_ram ),
+		.div          ( vid_div ),
+		.hcnt         ( vid_hcnt ),
+		.vcnt         ( vid_vcnt ),
+		.hblank       ( hblank ),
+		.vblank       ( vblank ),
+		.rate_60      ( 1'b0 ),
+		.ctrl0        ( vctrl0 ),
+		.ctrl1        ( vctrl1 ),
+		.flip         ( 1'b0 ),
+		.vis_mode     ( cfg_vis ),
+		.extend       ( cfg_extend ),
+
+		.line_addr    ( v_line_addr ), .line_q ( v_line_q ),
+		.pf_addr      ( v_pf_addr ),   .pf_q   ( v_pf_q ),
+		.pal_addr     ( v_pal_addr ),  .pal_q  ( v_pal_q ),
+		.text_addr    ( v_text_addr ), .text_q ( v_text_q ),
+		.char_addr    ( v_char_addr ), .char_q ( v_char_q ),
+		.pivot_addr   ( v_pivot_addr ),.pivot_q( v_pivot_q ),
+
+		.ch1_addr     ( ch1_addr ), .ch1_dout ( ch1_dout ), .ch1_req ( ch1_req ), .ch1_ready ( ch1_ready ),
+		.ch2_addr     ( ch2_addr ), .ch2_dout ( ch2_dout ), .ch2_req ( ch2_req ), .ch2_ready ( ch2_ready ),
+
+		.spr_addr     ( v_spr_addr ), .spr_q ( v_spr_q ),
+		.spr_a_lo_addr( spr_a_lo_addr ), .spr_a_lo_dout( spr_a_lo_dout ), .spr_a_lo_req( spr_a_lo_req ), .spr_a_lo_ready( spr_a_lo_ready ),
+		.spr_a_hi_addr( spr_a_hi_addr ), .spr_a_hi_dout( spr_a_hi_dout ), .spr_a_hi_req( spr_a_hi_req ), .spr_a_hi_ready( spr_a_hi_ready ),
+		.spr_b_lo_addr( spr_b_lo_addr ), .spr_b_lo_dout( spr_b_lo_dout ), .spr_b_lo_req( spr_b_lo_req ), .spr_b_lo_ready( spr_b_lo_ready ),
+		.spr_b_hi_addr( spr_b_hi_addr ), .spr_b_hi_dout( spr_b_hi_dout ), .spr_b_hi_req( spr_b_hi_req ), .spr_b_hi_ready( spr_b_hi_ready ),
+
+		.rgb          ( game_rgb ),
+		.dbg_lines    ( ), .dbg_fetch ( ), .dbg_max ( ),
+		.dbg_nz       ( ), .dbg_spr ( ), .dbg_rec ( ),
+		.dbg_sfetch   ( ), .dbg_short ( ), .dbg_fold ( ),
+		.spr_wr_stb   ( spr_wr_stb ), .dbg_tear ( ),
+		.dbg_seq_rec01( ), .dbg_seq_rec23( ), .dbg_seq_nspr01( ), .dbg_seq_nspr23( ), .dbg_seq_ovr( ),
+		.dbg_seq_fold01( ), .dbg_seq_fold23( ), .dbg_seq_used01( ), .dbg_seq_used23( ),
+		.dbg_sprpix   ( ), .dbg_mixpix ( ), .row_cap ( 2'd0 ),
+		.pal12        ( cfg_pal12 ),
+		.tile_base_lo ( map_tile_lo ), .tile_base_hi ( map_tile_hi ),
+		.sgfx_base_lo ( map_sgfx_lo ), .sgfx_base_hi ( map_sgfx_hi ),
+
+		.ddr_burstcnt ( fb_burstcnt ), .ddr_addr ( fb_addr ), .ddr_din ( fb_din ),
+		.ddr_be       ( fb_be ),       .ddr_we   ( fb_we ),   .ddr_rd  ( fb_rd ),
+		.ddr_busy     ( fb_busy ),     .ddr_dout ( fb_dout ), .ddr_dout_ready ( fb_dout_ready )
+	);
+
+	// Direct APF video generation
+	assign video_rgb = game_rgb;
+	assign video_de  = !hblank && !vblank;
+	assign video_hs  = (vid_hcnt < 9'd32);
+	assign video_vs  = (vid_vcnt < 9'd4);
+
+	// -------------------------------------------------------------------------
+	// 7. Sound Board (rf_sound_main + ES5505 + I2S)
+	// -------------------------------------------------------------------------
+	wire        es_we, bk_we, es_irqv_ack, vl_we, vl_offset;
+	wire  [7:0] vl_data;
+	wire  [3:0] es_reg;
+	wire [15:0] es_data;
+	wire  [1:0] es_be;
+	wire  [4:0] bk_voice;
+	wire  [2:0] bk_data;
+	wire  [7:0] es_irqv;
+	wire        es_rd_req, es_rd_valid;
+	wire  [3:0] es_rd_reg;
+	wire [15:0] es_rd_data;
+
+	rf_sound_main u_sound (
+		.clk        ( clk_sys ),
+		.reset      ( cpu_reset ),
+		.snd_reset  ( snd_reset ),
+		.pause      ( 1'b0 ),
+		.snd_bank   ( snd_bank ),
+		.snd_bank_en( snd_bank_en ),
+		.clk_ram    ( clk_ram ),
+		.ch_addr    ( ch5_addr ),
+		.ch_dout    ( ch5_dout ),
+		.ch_req     ( ch5_req ),
+		.ch_ready   ( ch5_ready ),
+		.dp_addr    ( snd_dp_addr ),
+		.dp_wdata   ( snd_dp_wdata ),
+		.dp_wren    ( snd_dp_wren ),
+		.dp_be      ( snd_dp_be ),
+		.dp_q       ( snd_dp_q ),
+		.es_we      ( es_we ),
+		.es_reg     ( es_reg ),
+		.es_data    ( es_data ),
+		.es_be      ( es_be ),
+		.bk_we      ( bk_we ),
+		.bk_voice   ( bk_voice ),
+		.bk_data    ( bk_data ),
+		.vl_we      ( vl_we ),
+		.vl_offset  ( vl_offset ),
+		.vl_data    ( vl_data ),
+		.esp_halt   ( ),
+		.es_irqv    ( es_irqv ),
+		.es_irqv_ack( es_irqv_ack ),
+		.es_rd_req  ( es_rd_req ),
+		.es_rd_reg  ( es_rd_reg ),
+		.es_rd_data ( es_rd_data ),
+		.es_rd_valid( es_rd_valid ),
+		.ring_we    ( ),
+		.ring_data  ( ),
+		.last_pc    ( ),
+		.es_wr_cnt  ( ),
+		.running    ( )
+	);
+
+	wire        sm_req, sm_valid, sm_busy;
+	wire [22:3] sm_addr;
+	wire [63:0] sm_line;
+	wire        es_out_valid;
+	wire [7:0][19:0] es_out;
+	wire  [4:0] es_active;
+
+	logic es_tick;
+	logic [31:0] es_acc;
+	always_ff @(posedge clk_sys) begin
+		es_tick <= 1'b0;
+		if (cpu_reset) es_acc <= 32'd0;
+		else if (es_acc + 32'd95238 >= 32'd53372000) begin
+			es_acc  <= es_acc + 32'd95238 - 32'd53372000;
+			es_tick <= 1'b1;
+		end else begin
+			es_acc  <= es_acc + 32'd95238;
+		end
+	end
+
+	rf_es5505 u_es5505 (
+		.clk        ( clk_sys ),
+		.reset      ( cpu_reset | snd_reset ),
+		.es_we      ( es_we ),
+		.es_reg     ( es_reg ),
+		.es_data    ( es_data ),
+		.es_be      ( es_be ),
+		.bk_we      ( bk_we ),
+		.bk_voice   ( bk_voice ),
+		.bk_data    ( bk_data ),
+		.bank_mask  ( 3'd7 ),
+		.sm_req     ( sm_req ),
+		.sm_addr    ( sm_addr ),
+		.sm_line    ( sm_line ),
+		.sm_valid   ( sm_valid ),
+		.sm_busy    ( sm_busy ),
+		.tick       ( es_tick ),
+		.out_valid  ( es_out_valid ),
+		.out_ch     ( es_out ),
+		.out_active ( es_active ),
+		.irqv_out   ( es_irqv ),
+		.irqv_ack   ( es_irqv_ack ),
+		.rd_req     ( es_rd_req ),
+		.rd_reg     ( es_rd_reg ),
+		.rd_data    ( es_rd_data ),
+		.rd_valid   ( es_rd_valid ),
+		.dbg_overrun( ), .dbg_miss( ), .dbg_wqdrop( )
+	);
+
+	rf_smp_bus u_smp_bus (
+		.clk_cpu ( clk_sys ),
+		.reset   ( cpu_reset ),
+		.addr    ( sm_addr ),
+		.req     ( sm_req ),
+		.line    ( sm_line ),
+		.valid   ( sm_valid ),
+		.busy    ( sm_busy ),
+		.clk_ram ( clk_ram ),
+		.ch_addr ( ch6_addr ),
+		.ch_dout ( ch6_dout ),
+		.ch_req  ( ch6_req ),
+		.ch_ready( ch6_ready ),
+		.base    ( map_smp )
+	);
+
+	// Mixer & Volume
+	logic signed [22:0] mix_l, mix_r;
+	always_ff @(posedge clk_sys) if (es_out_valid) begin
+		mix_l <= 23'($signed(es_out[0])) + 23'($signed(es_out[2])) + 23'($signed(es_out[4])) + 23'($signed(es_out[6]));
+		mix_r <= 23'($signed(es_out[1])) + 23'($signed(es_out[3])) + 23'($signed(es_out[5])) + 23'($signed(es_out[7]));
+	end
+	logic mix_valid;
+	always_ff @(posedge clk_sys) mix_valid <= es_out_valid;
+
+	wire signed [15:0] snd_l, snd_r;
+	rf_mb87078 u_mb87078 (
+		.clk     ( clk_sys ),
+		.reset   ( cpu_reset ),
+		.we      ( vl_we ),
+		.offset  ( vl_offset ),
+		.data    ( vl_data ),
+		.in_valid( mix_valid ),
+		.in_l    ( mix_l ),
+		.in_r    ( mix_r ),
+		.out_l   ( snd_l ),
+		.out_r   ( snd_r )
+	);
+
+	// Audio boost multiplier
+	reg signed [15:0] boost_l, boost_r;
+	always_comb begin
+		case (audio_boost)
+			2'd0: begin boost_l = snd_l <<< 3; boost_r = snd_r <<< 3; end // 8x
+			2'd1: begin boost_l = snd_l;       boost_r = snd_r;       end // 1x
+			2'd2: begin boost_l = snd_l <<< 2; boost_r = snd_r <<< 2; end // 4x
+			2'd3: begin boost_l = snd_l <<< 4; boost_r = snd_r <<< 4; end // 16x
+		endcase
+	end
+
+	// Pocket I2S Audio DAC (48 kHz)
+	sound_i2s u_i2s (
+		.clk_74a        ( clk_74a ),
+		.clk_audio      ( clk_sys ),
+		.audio_l        ( boost_l ),
+		.audio_r        ( boost_r ),
+		.audio_mclk     ( audio_mclk ),
+		.audio_lrck     ( audio_lrck ),
+		.audio_dac      ( audio_dac )
+	);
+
+endmodule
+`default_nettype wire
