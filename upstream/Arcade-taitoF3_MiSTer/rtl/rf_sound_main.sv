@@ -51,7 +51,9 @@
 //  1 kHz timer, too fast and busy-wait delays shrink.
 //============================================================================
 
-module rf_sound_main
+module rf_sound_main #(
+    parameter bit EXT_RAM = 1'b0
+)
 (
     input  logic        clk,            // 53.372 MHz
     input  logic        reset,          // system reset
@@ -103,7 +105,16 @@ module rf_sound_main
     // diagnostics
     output logic [23:0] last_pc,
     output logic [15:0] es_wr_cnt,      // ES5505 writes, running
-    output logic        running         // out of reset and past the boot copy
+    output logic        running,        // out of reset and past the boot copy
+
+    // external 64 KB work RAM port (used when EXT_RAM = 1)
+    output logic [14:0] ext_ram_addr,
+    output logic [15:0] ext_ram_wdata,
+    output logic  [1:0] ext_ram_be,
+    output logic        ext_ram_wr,
+    output logic        ext_ram_req,
+    input  logic [15:0] ext_ram_rdata,
+    input  logic        ext_ram_ack
 );
     localparam int SPEED_DIV = 2;
 
@@ -118,9 +129,9 @@ module rf_sound_main
     logic        cpu_rst;               // system or sound-board reset, or boot copy
 
     TG68KdotC_Kernel #(
-        .SR_Read(2), .VBR_Stackframe(2), .extAddr_Mode(2),
-        .MUL_Mode(2), .DIV_Mode(2), .BitField(2),
-        .BarrelShifter(1), .MUL_Hardware(1)
+        .SR_Read(0), .VBR_Stackframe(0), .extAddr_Mode(0),
+        .MUL_Mode(0), .DIV_Mode(0), .BitField(0),
+        .BarrelShifter(0), .MUL_Hardware(0)
     ) cpu (
         .clk(clk),
         .nReset(~cpu_rst),
@@ -195,15 +206,23 @@ module rf_sound_main
 
     // ---- sound RAM 64 KB -------------------------------------------------
     logic [14:0] ram_addr;
-    logic [15:0] ram_wdata, ram_q;
+    logic [15:0] ram_wdata, ram_q, bram_ram_q, ext_ram_rdata_lat;
     logic        ram_wren;
     logic  [1:0] ram_be;
+    logic        snd_ram_wait;
 
-    rf_bram_tdp #(.AW(15)) u_ram (
-        .clk(clk),
-        .a_addr(ram_addr), .a_wdata(ram_wdata), .a_wren(ram_wren), .a_be(ram_be), .a_q(ram_q),
-        .b_addr(15'd0), .b_wdata(16'd0), .b_wren(1'b0), .b_be(2'b00), .b_q()
-    );
+    generate
+        if (!EXT_RAM) begin : gen_bram_ram
+            rf_bram_tdp #(.AW(15)) u_ram (
+                .clk(clk),
+                .a_addr(ram_addr), .a_wdata(ram_wdata), .a_wren(ram_wren), .a_be(ram_be), .a_q(bram_ram_q),
+                .b_addr(15'd0), .b_wdata(16'd0), .b_wren(1'b0), .b_be(2'b00), .b_q()
+            );
+        end else begin : gen_no_bram_ram
+            assign bram_ram_q = 16'd0;
+        end
+    endgenerate
+    assign ram_q = EXT_RAM ? ext_ram_rdata_lat : bram_ram_q;
 
     // ---- DUART (timer + vector + OPR) ------------------------------------
     logic  [7:0] du_acr, du_imr, du_ctur, du_ctlr, du_ivr, du_isr, du_opr;
@@ -235,15 +254,19 @@ module rf_sound_main
     logic [1:0] spd;
     always_ff @(posedge clk) begin
         if (reset || snd_reset) begin
-            clkena   <= 1'b0;
-            rom_wait <= 1'b0;
-            prog_req <= 1'b0;
-            spd      <= 2'd0;
-            bst      <= B_HOLD;
-            boot_i   <= 2'd0;
+            clkena            <= 1'b0;
+            rom_wait          <= 1'b0;
+            prog_req          <= 1'b0;
+            snd_ram_wait      <= 1'b0;
+            ext_ram_req       <= 1'b0;
+            ext_ram_rdata_lat <= 16'd0;
+            spd               <= 2'd0;
+            bst               <= B_HOLD;
+            boot_i            <= 2'd0;
         end else begin
-            prog_req <= 1'b0;
-            clkena   <= 1'b0;
+            prog_req    <= 1'b0;
+            ext_ram_req <= 1'b0;
+            clkena      <= 1'b0;
             if (spd != 2'(SPEED_DIV - 1)) spd <= spd + 2'd1;
 
             boot_take <= 1'b0;
@@ -264,11 +287,35 @@ module rf_sound_main
                 end
                 B_COPY: begin
                     // 4 words into RAM 0..3 -- ram_* are driven below
-                    boot_i <= boot_i + 2'd1;
-                    if (boot_i == 2'd3) bst <= B_RUN;
+                    if (EXT_RAM) begin
+                        if (snd_ram_wait) begin
+                            if (ext_ram_ack) begin
+                                snd_ram_wait <= 1'b0;
+                                boot_i <= boot_i + 2'd1;
+                                if (boot_i == 2'd3) bst <= B_RUN;
+                            end
+                        end else begin
+                            ext_ram_req   <= 1'b1;
+                            ext_ram_wr    <= 1'b1;
+                            ext_ram_addr  <= {13'd0, boot_i};
+                            ext_ram_wdata <= {boot_line[16 * boot_i + 7 -: 8], boot_line[16 * boot_i + 15 -: 8]};
+                            ext_ram_be    <= 2'b11;
+                            snd_ram_wait  <= 1'b1;
+                        end
+                    end else begin
+                        boot_i <= boot_i + 2'd1;
+                        if (boot_i == 2'd3) bst <= B_RUN;
+                    end
                 end
                 B_RUN: begin
-                    if (rom_wait) begin
+                    if (EXT_RAM && snd_ram_wait) begin
+                        if (ext_ram_ack) begin
+                            snd_ram_wait      <= 1'b0;
+                            ext_ram_rdata_lat <= ext_ram_rdata;
+                            clkena            <= 1'b1;
+                            spd               <= 2'd0;
+                        end
+                    end else if (rom_wait) begin
                         if (prog_valid_lat) begin
                             rom_wait <= 1'b0;
                             clkena   <= 1'b1;
@@ -291,6 +338,13 @@ module rf_sound_main
                                        : {2'b10, a[19:1]};      // SDRAM 0x200000 + offset
                             prog_req  <= 1'b1;
                             rom_wait  <= 1'b1;
+                        end else if (EXT_RAM && sel_ram && !sel_iack && (cpu_rd || cpu_wr)) begin
+                            ext_ram_req   <= 1'b1;
+                            ext_ram_wr    <= cpu_wr;
+                            ext_ram_addr  <= a[15:1];
+                            ext_ram_wdata <= cpu_dout;
+                            ext_ram_be    <= be;
+                            snd_ram_wait  <= 1'b1;
                         end else if (sel_es && cpu_rd && !es_rd_valid) begin
                             // ES5505 read: hold the CPU until the sampler answers
                         end else begin

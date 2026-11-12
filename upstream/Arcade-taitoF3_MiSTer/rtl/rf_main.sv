@@ -52,7 +52,8 @@
 //============================================================================
 
 module rf_main #(
-    parameter bit EXT_RAM = 1'b0
+    parameter bit EXT_RAM = 1'b0,
+    parameter bit RING_EN = 1'b1
 )
 (
     input  logic        clk,             // 53.372 MHz
@@ -1066,13 +1067,19 @@ module rf_main #(
     // the binding resource on this device (539 of 553 in B13). Halving it
     // frees 12 and still holds a 2048-write comparison against MAME and a
     // 69 ms audio capture, both far more than any check has needed.
-    rf_bram #(.WIDTH(56), .AW(RING_AW)) u_ring (
-        .clk(clk),
-        .waddr(ring_wptr[RING_AW-1:0]),
-        .wdata(ring_wdat),
-        .wren(ring_adv),
-        .raddr(ring_raddr[RING_AW-1:0]), .q(ring_rdata)
-    );
+    generate
+        if (RING_EN) begin : g_ring
+            rf_bram #(.WIDTH(56), .AW(RING_AW)) u_ring (
+                .clk(clk),
+                .waddr(ring_wptr[RING_AW-1:0]),
+                .wdata(ring_wdat),
+                .wren(ring_adv),
+                .raddr(ring_raddr[RING_AW-1:0]), .q(ring_rdata)
+            );
+        end else begin : g_no_ring
+            assign ring_rdata = 56'd0;
+        end
+    endgenerate
 
     // ---- video-control write lines (vctrl_wr_dbg, above) -----------------
     logic [7:0]  vc_min, vc_max, vc_min_f, vc_max_f;

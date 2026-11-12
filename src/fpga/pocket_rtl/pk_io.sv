@@ -111,11 +111,11 @@ module pk_io #(
 
 	dcfifo #(
 		.intended_device_family("Cyclone V"),
-		.lpm_numwords(512),
+		.lpm_numwords(256),
 		.lpm_showahead("OFF"),
 		.lpm_type("dcfifo"),
 		.lpm_width(32),
-		.lpm_widthu(9),
+		.lpm_widthu(8),
 		.overflow_checking("ON"),
 		.underflow_checking("OFF"),
 		.use_eab("ON")

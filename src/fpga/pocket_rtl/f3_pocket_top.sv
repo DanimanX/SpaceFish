@@ -527,14 +527,14 @@ module f3_pocket_top (
 	);
 
 	// Video wires
-	wire [15:0] vctrl0, vctrl1;
-	wire [11:0] v_pal_addr;   wire [15:0] v_pal_q;
-	wire [14:0] v_pf_addr;    wire [15:0] v_pf_q;
-	wire [12:0] v_text_addr;  wire [15:0] v_text_q;
+	wire [7:0][15:0] vctrl0, vctrl1;
+	wire [13:0] v_pal_addr;   wire [15:0] v_pal_q;
+	wire [13:0] v_pf_addr;    wire [15:0] v_pf_q;
+	wire [11:0] v_text_addr;  wire [15:0] v_text_q;
 	wire [11:0] v_char_addr;  wire [15:0] v_char_q;
-	wire  [7:0] v_line_addr;  wire [15:0] v_line_q;
+	wire [14:0] v_line_addr;  wire [15:0] v_line_q;
 	wire [14:0] v_pivot_addr; wire [15:0] v_pivot_q;
-	wire  [9:0] v_spr_addr;   wire [15:0] v_spr_q;
+	wire [14:0] v_spr_addr;   wire [15:0] v_spr_q;
 	wire        spr_wr_stb;
 
 	// Sound wires
@@ -550,7 +550,8 @@ module f3_pocket_top (
 	wire [2:0] vid_div;
 	wire [8:0] vid_hcnt, vid_vcnt;
 
-	// Async SRAM controller for main CPU 128 KB work RAM (saves 128 M10K blocks)
+	// Async SRAM controller shared by main CPU 128 KB RAM (sram_a[16]=0)
+	// and sound CPU 64 KB RAM (sram_a[16:15]=2'b10) (saves 192 M10K blocks)
 	wire [15:0] ext_ram_addr;
 	wire [15:0] ext_ram_wdata;
 	wire  [1:0] ext_ram_be;
@@ -558,6 +559,17 @@ module f3_pocket_top (
 	wire        ext_ram_req;
 	reg  [15:0] ext_ram_rdata = 16'd0;
 	reg         ext_ram_ack   = 1'b0;
+
+	wire [14:0] snd_ext_ram_addr;
+	wire [15:0] snd_ext_ram_wdata;
+	wire  [1:0] snd_ext_ram_be;
+	wire        snd_ext_ram_wr;
+	wire        snd_ext_ram_req;
+	reg         snd_ext_ram_ack = 1'b0;
+
+	reg         main_ram_pend = 1'b0;
+	reg         snd_ram_pend  = 1'b0;
+	reg         sram_owner    = 1'b0; // 0 = main, 1 = sound
 
 	reg  [15:0] sram_dq_out = 16'd0;
 	reg         sram_dq_oe  = 1'b0;
@@ -569,29 +581,57 @@ module f3_pocket_top (
 
 	always @(posedge clk_sys or posedge reset) begin
 		if (reset) begin
-			sram_st     <= SR_IDLE;
-			sram_a      <= 17'd0;
-			sram_oe_n   <= 1'b1;
-			sram_we_n   <= 1'b1;
-			sram_ub_n   <= 1'b1;
-			sram_lb_n   <= 1'b1;
-			sram_dq_oe  <= 1'b0;
-			sram_dq_out <= 16'd0;
-			ext_ram_ack <= 1'b0;
+			sram_st         <= SR_IDLE;
+			sram_a          <= 17'd0;
+			sram_oe_n       <= 1'b1;
+			sram_we_n       <= 1'b1;
+			sram_ub_n       <= 1'b1;
+			sram_lb_n       <= 1'b1;
+			sram_dq_oe      <= 1'b0;
+			sram_dq_out     <= 16'd0;
+			ext_ram_ack     <= 1'b0;
+			snd_ext_ram_ack <= 1'b0;
+			main_ram_pend   <= 1'b0;
+			snd_ram_pend    <= 1'b0;
+			sram_owner      <= 1'b0;
 		end else begin
-			ext_ram_ack <= 1'b0;
+			ext_ram_ack     <= 1'b0;
+			snd_ext_ram_ack <= 1'b0;
+			if (ext_ram_req)     main_ram_pend <= 1'b1;
+			if (snd_ext_ram_req) snd_ram_pend  <= 1'b1;
+
 			case (sram_st)
 				SR_IDLE: begin
 					sram_oe_n  <= 1'b1;
 					sram_we_n  <= 1'b1;
 					sram_dq_oe <= 1'b0;
-					if (ext_ram_req) begin
-						sram_a      <= {1'b0, ext_ram_addr};
-						sram_ub_n   <= ~ext_ram_be[1];
-						sram_lb_n   <= ~ext_ram_be[0];
-						sram_wr_lat <= ext_ram_wr;
+					if (ext_ram_req || main_ram_pend) begin
+						main_ram_pend <= 1'b0;
+						sram_owner    <= 1'b0;
+						sram_a        <= {1'b0, ext_ram_addr};
+						sram_ub_n     <= ~ext_ram_be[1];
+						sram_lb_n     <= ~ext_ram_be[0];
+						sram_wr_lat   <= ext_ram_wr;
 						if (ext_ram_wr) begin
 							sram_dq_out <= ext_ram_wdata;
+							sram_dq_oe  <= 1'b1;
+							sram_we_n   <= 1'b0;
+							sram_oe_n   <= 1'b1;
+						end else begin
+							sram_dq_oe  <= 1'b0;
+							sram_we_n   <= 1'b1;
+							sram_oe_n   <= 1'b0;
+						end
+						sram_st <= SR_WAIT;
+					end else if (snd_ext_ram_req || snd_ram_pend) begin
+						snd_ram_pend <= 1'b0;
+						sram_owner   <= 1'b1;
+						sram_a       <= {2'b10, snd_ext_ram_addr};
+						sram_ub_n    <= ~snd_ext_ram_be[1];
+						sram_lb_n    <= ~snd_ext_ram_be[0];
+						sram_wr_lat  <= snd_ext_ram_wr;
+						if (snd_ext_ram_wr) begin
+							sram_dq_out <= snd_ext_ram_wdata;
 							sram_dq_oe  <= 1'b1;
 							sram_we_n   <= 1'b0;
 							sram_oe_n   <= 1'b1;
@@ -616,7 +656,8 @@ module f3_pocket_top (
 					sram_oe_n   <= 1'b1;
 					sram_we_n   <= 1'b1;
 					sram_dq_oe  <= 1'b0;
-					ext_ram_ack <= 1'b1;
+					if (sram_owner) snd_ext_ram_ack <= 1'b1;
+					else            ext_ram_ack     <= 1'b1;
 					sram_st     <= SR_IDLE;
 				end
 
@@ -625,7 +666,7 @@ module f3_pocket_top (
 		end
 	end
 
-	rf_main #(.EXT_RAM(1'b1)) u_main (
+	rf_main #(.EXT_RAM(1'b1), .RING_EN(1'b0)) u_main (
 		.clk        ( clk_sys ),
 		.reset      ( cpu_reset ),
 		.prog_addr  ( cpu_prog_addr ),
@@ -757,11 +798,36 @@ module f3_pocket_top (
 		.ddr_busy     ( fb_busy ),     .ddr_dout ( fb_dout ), .ddr_dout_ready ( fb_dout_ready )
 	);
 
+	// Raster timing generator (MAME taito_f3.cpp)
+	wire vid_hsync, vid_vsync;
+	rayforce_video u_vid_timing (
+		.clk        ( clk_sys ),
+		.reset      ( reset ),
+		.dl_active  ( 1'b0 ), .dl_seen ( 1'b0 ), .dl_bytes ( 32'd0 ), .dl_sum ( 32'd0 ), .dl_index ( 8'd0 ),
+		.trap_oor   ( 1'b0 ), .wr_count ( 32'd0 ), .wr_hash ( 32'd0 ), .last_pc ( 32'd0 ),
+		.bist_sum   ( 32'd0 ), .bist_done ( 1'b0 ),
+		.frame_cnt  ( 16'd0 ), .irq2_cnt ( 16'd0 ), .irq3_cnt ( 16'd0 ),
+		.pf_wr_cnt  ( 16'd0 ), .spr_wr_cnt ( 16'd0 ), .pal_wr_cnt ( 16'd0 ), .line_wr_cnt ( 16'd0 ),
+		.v_pal_addr ( ), .v_pal_q ( 16'd0 ),
+		.vis_mode   ( cfg_vis ),
+		.rate_60    ( 1'b0 ),
+		.vbl_rise   ( vbl_rise ),
+		.div_o      ( vid_div ),
+		.hcnt_o     ( vid_hcnt ),
+		.vcnt_o     ( vid_vcnt ),
+		.ce_pix     ( ),
+		.r          ( ), .g ( ), .b ( ),
+		.hblank     ( hblank ),
+		.vblank     ( vblank ),
+		.hsync      ( vid_hsync ),
+		.vsync      ( vid_vsync )
+	);
+
 	// Direct APF video generation
 	assign video_rgb = game_rgb;
 	assign video_de  = !hblank && !vblank;
-	assign video_hs  = (vid_hcnt < 9'd32);
-	assign video_vs  = (vid_vcnt < 9'd4);
+	assign video_hs  = vid_hsync;
+	assign video_vs  = vid_vsync;
 
 	// -------------------------------------------------------------------------
 	// 7. Sound Board (rf_sound_main + ES5505 + I2S)
@@ -778,7 +844,7 @@ module f3_pocket_top (
 	wire  [3:0] es_rd_reg;
 	wire [15:0] es_rd_data;
 
-	rf_sound_main u_sound (
+	rf_sound_main #(.EXT_RAM(1'b1)) u_sound (
 		.clk        ( clk_sys ),
 		.reset      ( cpu_reset ),
 		.snd_reset  ( snd_reset ),
@@ -816,7 +882,14 @@ module f3_pocket_top (
 		.ring_data  ( ),
 		.last_pc    ( ),
 		.es_wr_cnt  ( ),
-		.running    ( )
+		.running    ( ),
+		.ext_ram_addr ( snd_ext_ram_addr ),
+		.ext_ram_wdata( snd_ext_ram_wdata ),
+		.ext_ram_be   ( snd_ext_ram_be ),
+		.ext_ram_wr   ( snd_ext_ram_wr ),
+		.ext_ram_req  ( snd_ext_ram_req ),
+		.ext_ram_rdata( ext_ram_rdata ),
+		.ext_ram_ack  ( snd_ext_ram_ack )
 	);
 
 	wire        sm_req, sm_valid, sm_busy;

@@ -262,7 +262,17 @@ module rf_video_spr
     // the async read the MLAB arrays below are chosen for. 1024 x 28 bits is
     // 3 M10Ks against 64 MLABs, and M10K is the resource with headroom.
     (* ramstyle = "M10K, no_rw_check" *) logic [27:0] sl_y [0:NSPR-1];
-    (* ramstyle = "MLAB, no_rw_check" *) logic [52:0] sl_d [0:1][0:NSPR-1];
+    // 2 banks x 1024 sprites x 53 bits in M10K (1-cycle registered read)
+    wire        sl_d_we   = (pst == P_WALK) && s_valid && (nspr < 11'(NSPR));
+    wire [10:0] sl_d_waddr = {wb, nspr[9:0]};
+    wire [52:0] sl_d_wdata = {s_tx, s_sx, s_code, s_color, s_fx};
+    wire [10:0] sl_d_raddr = {rb, rc_sidx};
+    wire [52:0] sd_w;
+    rf_bram #(.WIDTH(53), .AW(11)) u_sl_d (
+        .clk(clk),
+        .waddr(sl_d_waddr), .wdata(sl_d_wdata), .wren(sl_d_we),
+        .raddr(sl_d_raddr), .q(sd_w)
+    );
     logic [10:0] nspr;
 
     // ---- bucket store, double banked: a COUNTING SORT ---------------------
@@ -378,13 +388,23 @@ module rf_video_spr
     // boss frames (rec_drop counts them), which is far better than rows
     // ALIASED. Any future NREC must satisfy 2*NREC <= 2^RW, or RW must grow
     // -- and the map report's NUMWORDS for rec_rtl_0 must be checked.
-    localparam int NREC = 8192;         // per bank -- see above before changing
+    localparam int NREC = 2048;         // per bank -- 9 M10K blocks total
     localparam int RW   = 14;           // record index width
     localparam int RW1  = RW + 1;       // the prefix sum reaches NREC
     // record: {sidx[9:0], srow_a[3:0], srow_b[3:0]} -- the run's first and
     // last source row. The draw steps from a toward b, so the direction
     // (rows walk 15 -> 0, and flipy inverts the source row) is implied.
-    (* ramstyle = "MLAB, no_rw_check" *) logic [17:0]   rec [0:1][0:NREC-1];
+    // 2 banks x 2048 records x 18 bits in M10K (1-cycle registered read)
+    wire        rec_we    = (pst == P_EWR) && (f_rd != l_rd);
+    wire [11:0] rec_waddr = {wb, f_rd[10:0]};
+    wire [17:0] rec_wdata = {ex_i[9:0], e_a, e_b};
+    wire [11:0] rec_raddr = {rb, fc[10:0]};
+    wire [17:0] rc_w;
+    rf_bram #(.WIDTH(18), .AW(12)) u_rec (
+        .clk(clk),
+        .waddr(rec_waddr), .wdata(rec_wdata), .wren(rec_we),
+        .raddr(rec_raddr), .q(rc_w)
+    );
     // per line, prepass scratch: rows counted (pass 1), then the fill
     // pointer (pass 2); and the clamped end of the line's run
     (* ramstyle = "MLAB, no_rw_check" *) logic [RW-1:0] cnt [0:255];
@@ -584,7 +604,6 @@ module rf_video_spr
     // fields are good from TWO cycles after fc changes (fc_ok); every use
     // below waits for that.
     logic [RW-1:0] fc, fe;
-    wire [17:0]        rc_w    = rec[rb][fc];
     wire        [9:0]  rc_sidx = rc_w[17:8];
     wire        [3:0]  rc_a    = rc_w[7:4];      // the run's first source row
     wire        [3:0]  rc_b    = rc_w[3:0];      // ... and its last
@@ -595,9 +614,6 @@ module rf_video_spr
     logic        [3:0] ir_row;
     wire        [3:0]  is_row  = ir_open ? ir_row : rc_a;
     wire        [3:0]  is_next = (rc_b > rc_a) ? is_row + 4'd1 : is_row - 4'd1;
-    logic       [9:0]  sidx_r;
-    always_ff @(posedge clk) sidx_r <= rc_sidx;
-    wire [52:0]        sd_w    = sl_d[rb][sidx_r];
     wire signed [17:0] sd_tx   = sd_w[52:35];
     wire        [8:0]  sd_sx   = sd_w[34:26];
     wire       [16:0]  sd_code = sd_w[25:9];
@@ -638,7 +654,8 @@ module rf_video_spr
         for (int k = 0; k < 16; k++)
             if ((q_pix[q_cs][6*k +: 6] & penmask_e) != 6'd0) q_any = 1'b1;
     end
-    logic              fc_ok;            // fc's two-deep lookup has settled
+    logic        [1:0] fc_wait;
+    wire               fc_ok = (fc_wait == 2'd0); // fc's two-deep M10K lookup has settled
 
     // ---- sprite gfx fetch, two buses ------------------------------------
     logic [1:0][16:0] gfx_code;
@@ -936,7 +953,6 @@ module rf_video_spr
             P_WALK: begin
                 if (s_valid && nspr < 11'(NSPR)) begin
                     sl_y[nspr]     <= {s_ty, s_sy, s_fy};
-                    sl_d[wb][nspr] <= {s_tx, s_sx, s_code, s_color, s_fx};
                     nspr <= nspr + 11'd1;
                 end
                 if (!clr_i[8]) begin
@@ -1026,7 +1042,6 @@ module rf_video_spr
             end
             P_EWR: begin
                 if (f_rd != l_rd) begin
-                    rec[wb][f_rd] <= {ex_i[9:0], e_a, e_b};
                     cnt[e_dy]     <= f_rd + 1'b1;
                 end else if (drop_cnt != 16'hFFFF) begin
                     drop_cnt <= drop_cnt + 16'd1;
@@ -1082,7 +1097,7 @@ module rf_video_spr
         wr_en   <= 1'b0;
         fb_req  <= 1'b0;
         used_pub <= 1'b0;
-        fc_ok   <= 1'b1;                 // cleared below whenever fc changes
+        if (fc_wait != 2'd0) fc_wait <= fc_wait - 2'd1;
 
         // capture completions (bus i serves slot i)
         if (gfx_valid[0] && q_busy[0]) begin q_pix[0] <= gfx_pix[0]; q_ready[0] <= 1'b1; end
@@ -1163,9 +1178,9 @@ module rf_video_spr
                     span_hi[dbank] <= cur_hi;
                     dst <= D_DONE;
                 end else begin
-                    fc    <= bt_q[RW-1:0];
-                    fe    <= bt_q[2*RW-1:RW];
-                    fc_ok <= 1'b0;
+                    fc      <= bt_q[RW-1:0];
+                    fe      <= bt_q[2*RW-1:RW];
+                    fc_wait <= 2'd2;
                     ir_open <= 1'b0;
                     dst   <= D_RUN;
                 end
@@ -1182,7 +1197,7 @@ module rf_video_spr
                 // forced inside its budget.
                 if (row_cap != 2'd0 && rows_line >= cap_rows && fc != fe) begin
                     fc      <= fe;
-                    fc_ok   <= 1'b0;
+                    fc_wait <= 2'd2;
                     ir_open <= 1'b0;
                 end
                 // ---- issue the next row of the record at fc into the free
@@ -1199,7 +1214,7 @@ module rf_video_spr
                     q_fx[q_is]     <= sd_fx;
                     if (is_row == rc_b) begin
                         fc      <= fc + 1'b1;
-                        fc_ok   <= 1'b0;
+                        fc_wait <= 2'd2;
                         ir_open <= 1'b0;
                     end else begin
                         ir_open <= 1'b1;
