@@ -250,9 +250,10 @@ end
 
 wire reset_n;
 wire boot_done;
+wire pll_locked_core;
 
-wire status_boot_done  = boot_done;
-wire status_setup_done = boot_done;
+wire status_boot_done  = pll_locked_core;
+wire status_setup_done = pll_locked_core;
 wire status_running    = reset_n;
 
 wire dataslot_requestread;
@@ -338,8 +339,6 @@ core_bridge_cmd icb (
     .datatable_data         ( 32'd0 ),
     .datatable_q            ( )
 );
-
-wire pll_locked_core;
 
 f3_pocket_top if3 (
     .clk_74a                    ( clk_74a ),

@@ -123,6 +123,7 @@ module f3_pocket_top (
 		.bridge_wr      ( bridge_wr ),
 		.bridge_wr_data ( bridge_wr_data ),
 		.pad_key        ( pad_key ),
+		.apf_dataslot_complete ( apf_dataslot_complete ),
 
 		.clk_sys        ( clk_sys ),
 		.pll_locked     ( pll_locked ),

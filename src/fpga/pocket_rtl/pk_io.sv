@@ -17,6 +17,7 @@ module pk_io #(
 
 	// ---- APF pad controller ------------------------------------------------
 	input  wire [31:0] pad_key,          // APF key bitmap
+	input  wire        apf_dataslot_complete,
 
 	// ---- Core side ---------------------------------------------------------
 	input  wire        clk_sys,          // 53.37 MHz
@@ -136,23 +137,30 @@ module pk_io #(
 		.aclr(!apf_reset_n), .eccstatus(), .rdfull(), .rdusedw(), .wrempty(), .wrusedw()
 	);
 
-	// Synchronize header arrival to clk_sys
+	// Synchronize header arrival & dataslot completion to clk_sys
 	reg [2:0] hdr_sync;
-	always @(posedge clk_sys) hdr_sync <= {hdr_sync[1:0], header_seen_74};
-	wire hdr_seen_sys = hdr_sync[1];
+	reg [1:0] dsc_sync;
+	always @(posedge clk_sys) begin
+		hdr_sync <= {hdr_sync[1:0], header_seen_74};
+		dsc_sync <= {dsc_sync[0], apf_dataslot_complete};
+	end
+	wire hdr_seen_sys     = hdr_sync[1];
+	wire dsc_complete_sys = dsc_sync[1];
 
 	// ioctl FSM on clk_sys
 	localparam [3:0]
-		S_IDLE     = 4'd0,
-		S_CFG1     = 4'd1, // Emit index 1 (cfg low byte)
-		S_CFG1_ACK = 4'd2,
-		S_CFG2     = 4'd3, // Emit index 2 (cfg high byte)
-		S_CFG2_ACK = 4'd4,
-		S_LOAD_RD  = 4'd5, // Read FIFO
-		S_LOAD_LAT = 4'd6,
-		S_LOAD_LO  = 4'd7, // Emit low 16-bit word
-		S_LOAD_HI  = 4'd8, // Emit high 16-bit word
-		S_RUN      = 4'd9;
+		S_IDLE        = 4'd0,
+		S_CFG1        = 4'd1, // Emit index 1 (cfg low byte)
+		S_CFG1_ACK    = 4'd2,
+		S_CFG2        = 4'd3, // Emit index 2 (cfg high byte)
+		S_CFG2_ACK    = 4'd4,
+		S_LOAD_RD     = 4'd5, // Read FIFO
+		S_LOAD_LAT    = 4'd6,
+		S_LOAD_LO     = 4'd7, // Emit low 16-bit word
+		S_LOAD_LO_INC = 4'd8,
+		S_LOAD_HI     = 4'd9, // Emit high 16-bit word
+		S_LOAD_HI_INC = 4'd10,
+		S_RUN         = 4'd11;
 
 	reg [3:0]  state = S_IDLE;
 	reg [31:0] lat_word = 32'd0;
@@ -213,6 +221,8 @@ module pk_io #(
 					if (!fifo_empty) begin
 						fifo_rd <= 1'b1;
 						state   <= S_LOAD_LAT;
+					end else if (dsc_complete_sys) begin
+						state <= S_RUN;
 					end
 				end
 
@@ -225,19 +235,26 @@ module pk_io #(
 					if (!ioctl_wait) begin
 						ioctl_dout <= lat_word[15:0];
 						ioctl_wr   <= 1'b1;
-						state      <= S_LOAD_HI;
+						state      <= S_LOAD_LO_INC;
 					end
+				end
+
+				S_LOAD_LO_INC: begin
+					ioctl_addr <= ioctl_addr + 27'd2;
+					state      <= S_LOAD_HI;
 				end
 
 				S_LOAD_HI: begin
 					if (!ioctl_wait) begin
-						ioctl_addr <= ioctl_addr + 27'd2;
 						ioctl_dout <= lat_word[31:16];
 						ioctl_wr   <= 1'b1;
-						// Next word
-						ioctl_addr <= ioctl_addr + 27'd4;
-						state      <= S_LOAD_RD;
+						state      <= S_LOAD_HI_INC;
 					end
+				end
+
+				S_LOAD_HI_INC: begin
+					ioctl_addr <= ioctl_addr + 27'd2;
+					state      <= S_LOAD_RD;
 				end
 
 				S_RUN: begin
