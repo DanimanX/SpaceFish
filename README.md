@@ -13,9 +13,10 @@ An openFPGA port of the **Taito F3 Arcade System** for the **Analogue Pocket**, 
 ## Features
 
 - **True Multigame Architecture:** Run dozens of classic Taito F3 titles using a single core bitstream.
-- **Dual External Memory Engine:**
+- **Triple External Memory Engine (Cyclone V `5CEBA4F23C8` Fit):**
   - **64 MB SDR SDRAM (`dram_*`):** Stores game ROMs (up to Profile 1's 42 MB map), tile graphics, sprite textures, Ensoniq sound samples, and pivot RAM across 8 multiplexed channels.
-  - **16 MB Cellular PSRAM (`cram0_*`):** Dedicated to the 320 KB double-buffered sprite framebuffer, completely removing DDR3 requirements with zero bus contention against SDRAM.
+  - **16 MB Cellular PSRAM 0 (`cram0_*`):** Dedicated to the 320 KB double-buffered sprite framebuffer via `psram_phy.sv` with a `clk_sys` ↔ `clk_ram` 64-bit burst bridge, completely removing DDR3 requirements with zero bus contention against SDRAM.
+  - **256 KB Async SRAM (`sram_*`):** Hosts the 128 KB 68EC020 main CPU work RAM (`EXT_RAM=1` in `rf_main.sv`), freeing 128 M10K blocks so the entire Taito F3 core fits comfortably inside the Analogue Pocket's 308-block M10K budget.
 - **Cycle-Accurate Video:** Native 320x224 / 320x240 RGB 24-bit output with support for both standard and extended playfields (`cfg_extend`).
 - **Ensoniq OTIS Sound Synthesis:** ES5505 32-voice sound engine + MB87078 attenuator driven by a dedicated 68000 sound CPU, streamed directly to the Pocket's 48 kHz stereo I2S DAC.
 - **Automated Self-Configuring ROMs:** ROMs built with `tools/build_rom.py` pack hardware configuration tags (visarea, extend mode, map profile, and palette width) into a compact 16-byte header, configuring the hardware on the fly upon loading.
@@ -134,10 +135,39 @@ This generates the bit-reversed `bitstream.rbf_r`, copies the APF metadata, and 
 
 ## Technical Architecture
 
+### Hardware Schematic & Memory Map
+
+```mermaid
+flowchart LR
+    APF["APF Bridge & Pad (clk_74a)"] --> PKIO["pk_io (512x32 ROM FIFO)"]
+    PKIO -->|ioctl stream| SDRAM["rf_sdram (8-ch Arbiter)"]
+    SDRAM <-->|64 MB 16-bit| DRAM["SDR SDRAM (dram_*)"]
+
+    MAIN["rf_main (TG68K 68020, EXT_RAM=1)"] <-->|128 KB Work RAM| SRAMCTL["Async SRAM Controller"]
+    SRAMCTL <-->|256 KB 10ns| SRAM["Async SRAM (sram_*)"]
+
+    MAIN <-->|Prog / Pivot| SDRAM
+    SND["rf_sound_main (68000 + ES5505)"] <-->|Audio / Samples| SDRAM
+    VPIPE["rf_video_pipe"] <-->|Tiles / Sprites| SDRAM
+
+    VPIPE <-->|64-bit FB| SPRFB["rf_spr_fb (320 KB)"]
+    SPRFB <-->|clk_sys / clk_ram Bridge| PHY["psram_phy (LC=2, CLKDIV=2)"]
+    PHY <-->|16 MB 16-bit| CRAM0["Cellular PSRAM 0 (cram0_*)"]
+
+    VPIPE -->|RGB24| VID["APF Video (clk_pix)"]
+    SND -->|48 kHz Stereo| I2S["sound_i2s"]
+```
+
+- **Verified Quartus Prime 25.1 Lite Fit (`5CEBA4F23C8`):**
+  - Logic utilization: `11,449 / 18,480 ALMs (62%)`
+  - Block memory bits: `2,489,472 / 3,153,920 (79%)` (`308 / 308` RAM blocks)
+  - DSP blocks: `17 / 66 (26%)`
+
 See [`PORTING.md`](PORTING.md) for full architectural documentation, including:
 - Cyclone V PLL clock synthesis (`f3_pll.sv`).
 - SDRAM 8-channel arbiter mapping (`rf_sdram.sv`).
-- Cellular PSRAM 0 sprite framebuffer controller (`rf_spr_fb.sv`).
+- Cellular PSRAM 0 sprite framebuffer controller (`rf_spr_fb.sv` + `psram_phy.sv`).
+- Async SRAM 128 KB main work RAM bridge (`f3_pocket_top.sv` + `rf_main.sv`).
 - APF Data slot streaming protocol (`pk_io.sv`).
 
 ---

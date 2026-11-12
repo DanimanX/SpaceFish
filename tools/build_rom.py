@@ -26,14 +26,15 @@ MAGIC = b"TF3\x01"
 def crc32(data: bytes) -> int:
     return zlib.crc32(data) & 0xFFFFFFFF
 
-def part_bytes(el, zf, by_crc):
+def part_bytes(el, by_crc):
     if el.get("crc") is None:
         data = bytes(int(b, 16) for b in (el.text or "").split())
         return data * int(el.get("repeat", "1"))
     c = int(el.get("crc"), 16)
     if c not in by_crc:
         raise KeyError(f"Part CRC {c:08x} not found in zip")
-    data = zf.read(by_crc[c])
+    zf, info = by_crc[c]
+    data = zf.read(info)
     off = int(el.get("offset", "0"), 0)
     ln = el.get("length")
     if off or ln is not None:
@@ -68,21 +69,27 @@ def assemble_rom_stream(mra_path: str, roms_dir: str) -> tuple[bytes, int]:
     if not zip_name:
         raise ValueError(f"No zip attribute in rom0 of {mra_path}")
 
-    zip_path = os.path.join(roms_dir, zip_name)
-    if not os.path.isfile(zip_path):
-        raise FileNotFoundError(f"Missing zip file {zip_path}")
-
-    zf = zipfile.ZipFile(zip_path)
-    by_crc = {i.CRC & 0xFFFFFFFF: i for i in zf.infolist()}
+    zip_names = [z.strip() for z in zip_name.split("|") if z.strip()]
+    by_crc = {}
+    found_any = False
+    for zn in zip_names:
+        zp = os.path.join(roms_dir, zn)
+        if os.path.isfile(zp):
+            found_any = True
+            zf = zipfile.ZipFile(zp)
+            for i in zf.infolist():
+                by_crc.setdefault(i.CRC & 0xFFFFFFFF, (zf, i))
+    if not found_any:
+        raise FileNotFoundError(f"Missing zip file {os.path.join(roms_dir, zip_name)}")
 
     stream = bytearray()
     for el in rom0:
         if el.tag == "part":
-            stream += part_bytes(el, zf, by_crc)
+            stream += part_bytes(el, by_crc)
         elif el.tag == "interleave":
             parts = []
             for p in el.findall("part"):
-                data = part_bytes(p, zf, by_crc)
+                data = part_bytes(p, by_crc)
                 m = p.get("map")
                 lanes = {}
                 for pos, ch in enumerate(reversed(m)):

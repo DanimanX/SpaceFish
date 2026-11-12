@@ -62,6 +62,14 @@ module f3_pocket_top (
 	output wire         cram0_ub_n,
 	output wire         cram0_lb_n,
 
+	// Asynchronous SRAM (256 KB, 128K x 16, main CPU 128 KB work RAM)
+	output reg  [16:0]  sram_a,
+	inout  wire [15:0]  sram_dq,
+	output reg          sram_oe_n,
+	output reg          sram_we_n,
+	output reg          sram_ub_n,
+	output reg          sram_lb_n,
+
 	output wire        boot_done,
 	output wire        pll_locked_o
 );
@@ -276,52 +284,214 @@ module f3_pocket_top (
 	);
 
 	// -------------------------------------------------------------------------
-	// 5. Cellular PSRAM 0 Interface for Sprite Framebuffer
+	// 5. Cellular PSRAM 0 Interface for Sprite Framebuffer (via psram_phy)
 	// -------------------------------------------------------------------------
 	// The sprite framebuffer (rf_spr_fb) needs 320 KB (40,960 64-bit words).
-	// On Analogue Pocket, cram0 (16 MB PSRAM) is dedicated to it!
+	// On Analogue Pocket, cram0 (16 MB PSRAM) is dedicated to it via psram_phy.
 	wire  [7:0] fb_burstcnt;
 	wire [28:0] fb_addr;
-	wire [63:0] fb_din, fb_dout;
+	wire [63:0] fb_din;
+	reg  [63:0] fb_dout;
 	wire  [7:0] fb_be;
-	wire        fb_we, fb_rd, fb_busy, fb_dout_ready;
+	wire        fb_we, fb_rd, fb_busy;
+	reg         fb_dout_ready;
 
-	// Simple bridge from 64-bit fb_* transactions to 16-bit PSRAM PHY
-	reg [1:0] cram_step = 2'd0;
-	reg       cram_active = 1'b0;
+	// clk_sys -> clk_ram request handoff (data stable while req_tog != req_ack_tog)
+	reg         fb_active = 1'b0;
+	reg         fb_req_tog = 1'b0;
+	reg         fb_req_we = 1'b0;
+	reg  [16:0] fb_req_addr = 17'd0;
+	reg  [63:0] fb_req_din = 64'd0;
+	reg   [7:0] fb_req_cnt = 8'd0;
 
-	assign cram0_adv_n = 1'b1;
-	assign cram0_cre   = 1'b0;
-	assign cram0_ce1_n = 1'b1; // die 1 unused
-	assign cram0_clk   = clk_sys;
+	reg  [2:0]  fb_done_sync = 3'd0;
+	reg  [2:0]  fb_rsp_sync  = 3'd0;
+	reg  [1:0]  cfg_done_sync = 2'd0;
+	wire        cfg_done_ram;
+	wire        cfg_done_sys = cfg_done_sync[1];
 
-	// Direct synchronous PSRAM burst adapter
-	assign cram0_ce0_n = !cram_active;
-	assign cram0_oe_n  = !(cram_active && fb_rd);
-	assign cram0_we_n  = !(cram_active && fb_we);
-	assign cram0_ub_n  = 1'b0;
-	assign cram0_lb_n  = 1'b0;
-	assign cram0_a     = fb_addr[21:16];
+	reg  [63:0] ps_rsp_rdata = 64'd0;
+	reg         ps_rsp_tog   = 1'b0;
+	reg         ps_done_tog  = 1'b0;
 
-	assign fb_busy       = cram_active;
-	assign fb_dout_ready = cram_active && fb_rd && (cram_step == 2'd3);
+	assign fb_busy = fb_active || !cfg_done_sys;
 
 	always @(posedge clk_sys or posedge reset) begin
 		if (reset) begin
-			cram_active <= 1'b0;
-			cram_step   <= 2'd0;
+			fb_active     <= 1'b0;
+			fb_req_tog    <= 1'b0;
+			fb_done_sync  <= 3'd0;
+			fb_rsp_sync   <= 3'd0;
+			cfg_done_sync <= 2'd0;
+			fb_dout       <= 64'd0;
+			fb_dout_ready <= 1'b0;
 		end else begin
-			if (!cram_active) begin
-				if (fb_we || fb_rd) begin
-					cram_active <= 1'b1;
-					cram_step   <= 2'd0;
-				end
-			end else begin
-				cram_step <= cram_step + 2'd1;
-				if (cram_step == 2'd3) begin
-					cram_active <= 1'b0;
-				end
+			cfg_done_sync <= {cfg_done_sync[0], cfg_done_ram};
+			fb_done_sync  <= {fb_done_sync[1:0], ps_done_tog};
+			fb_rsp_sync   <= {fb_rsp_sync[1:0],  ps_rsp_tog};
+			fb_dout_ready <= 1'b0;
+
+			if (fb_rsp_sync[2] ^ fb_rsp_sync[1]) begin
+				fb_dout       <= ps_rsp_rdata;
+				fb_dout_ready <= 1'b1;
 			end
+
+			if (fb_active) begin
+				if (fb_done_sync[2] ^ fb_done_sync[1]) begin
+					fb_active <= 1'b0;
+				end
+			end else if (!fb_busy && (fb_we || fb_rd)) begin
+				fb_active   <= 1'b1;
+				fb_req_we   <= fb_we;
+				fb_req_addr <= fb_addr[16:0];
+				fb_req_din  <= fb_din;
+				fb_req_cnt  <= fb_we ? 8'd1 : fb_burstcnt;
+				fb_req_tog  <= ~fb_req_tog;
+			end
+		end
+	end
+
+	// clk_ram reset sync
+	reg [1:0] ram_rst_sync = 2'b11;
+	always @(posedge clk_ram or negedge pll_locked) begin
+		if (!pll_locked) ram_rst_sync <= 2'b11;
+		else             ram_rst_sync <= {ram_rst_sync[0], reset};
+	end
+	wire ram_reset = ram_rst_sync[1];
+
+	// psram_phy wires
+	reg         ps_cmd_valid = 1'b0;
+	wire        ps_cmd_ready;
+	reg         ps_cmd_we    = 1'b0;
+	reg  [22:0] ps_cmd_addr  = 23'd0;
+	wire        ps_wd_pop;
+	reg   [1:0] ps_w_idx     = 2'd0;
+	wire [15:0] ps_wd_data   = (ps_w_idx == 2'd0) ? fb_req_din[15:0]  :
+	                           (ps_w_idx == 2'd1) ? fb_req_din[31:16] :
+	                           (ps_w_idx == 2'd2) ? fb_req_din[47:32] :
+	                                                fb_req_din[63:48];
+	wire        ps_rd_valid;
+	wire [15:0] ps_rd_data;
+	wire        ps_rd_last;
+
+	wire [15:0] cram0_dq_out;
+	wire        cram0_dq_oe;
+	assign cram0_dq = cram0_dq_oe ? cram0_dq_out : 16'hzzzz;
+
+	psram_phy #(
+		.LC(2),
+		.CLKDIV(2),
+		.RDLAT(2)
+	) u_cram0_phy (
+		.clk       ( clk_ram ),
+		.rst       ( ram_reset ),
+		.cmd_valid ( ps_cmd_valid ),
+		.cmd_ready ( ps_cmd_ready ),
+		.cmd_we    ( ps_cmd_we ),
+		.cmd_addr  ( ps_cmd_addr ),
+		.cmd_len   ( 5'd3 ), // 4 x 16-bit words = 64 bits
+		.wd_pop    ( ps_wd_pop ),
+		.wd_data   ( ps_wd_data ),
+		.wd_be     ( 2'b11 ),
+		.rd_valid  ( ps_rd_valid ),
+		.rd_data   ( ps_rd_data ),
+		.rd_last   ( ps_rd_last ),
+		.cfg_done  ( cfg_done_ram ),
+		.p_a       ( cram0_a ),
+		.p_dq_out  ( cram0_dq_out ),
+		.p_dq_oe   ( cram0_dq_oe ),
+		.p_dq_in   ( cram0_dq ),
+		.p_clk     ( cram0_clk ),
+		.p_adv_n   ( cram0_adv_n ),
+		.p_cre     ( cram0_cre ),
+		.p_ce0_n   ( cram0_ce0_n ),
+		.p_ce1_n   ( cram0_ce1_n ),
+		.p_oe_n    ( cram0_oe_n ),
+		.p_we_n    ( cram0_we_n ),
+		.p_ub_n    ( cram0_ub_n ),
+		.p_lb_n    ( cram0_lb_n ),
+		.p_wait    ( cram0_wait )
+	);
+
+	// clk_ram bridge FSM for 64-bit transactions & bursts
+	localparam [1:0] PS_IDLE = 2'd0, PS_ISSUE = 2'd1, PS_WAIT_WR = 2'd2, PS_WAIT_RD = 2'd3;
+	reg  [1:0] ps_st = PS_IDLE;
+	reg  [2:0] ps_req_sync = 3'd0;
+	reg  [7:0] ps_rem = 8'd0;
+	reg [47:0] ps_rd_shift = 48'd0;
+	reg  [1:0] ps_r_idx = 2'd0;
+
+	always @(posedge clk_ram or posedge ram_reset) begin
+		if (ram_reset) begin
+			ps_st        <= PS_IDLE;
+			ps_req_sync  <= 3'd0;
+			ps_cmd_valid <= 1'b0;
+			ps_w_idx     <= 2'd0;
+			ps_r_idx     <= 2'd0;
+			ps_rsp_tog   <= 1'b0;
+			ps_done_tog  <= 1'b0;
+		end else begin
+			ps_req_sync <= {ps_req_sync[1:0], fb_req_tog};
+
+			case (ps_st)
+				PS_IDLE: begin
+					ps_cmd_valid <= 1'b0;
+					if (ps_req_sync[2] ^ ps_req_sync[1]) begin
+						ps_cmd_we    <= fb_req_we;
+						ps_cmd_addr  <= {4'b0, fb_req_addr, 2'b00};
+						ps_rem       <= fb_req_cnt;
+						ps_w_idx     <= 2'd0;
+						ps_r_idx     <= 2'd0;
+						ps_cmd_valid <= 1'b1;
+						ps_st        <= PS_ISSUE;
+					end
+				end
+
+				PS_ISSUE: begin
+					if (ps_cmd_valid && ps_cmd_ready) begin
+						ps_cmd_valid <= 1'b0;
+						ps_st        <= ps_cmd_we ? PS_WAIT_WR : PS_WAIT_RD;
+					end
+				end
+
+				PS_WAIT_WR: begin
+					if (ps_wd_pop) begin
+						if (ps_w_idx == 2'd3) begin
+							ps_w_idx    <= 2'd0;
+							ps_done_tog <= ~ps_done_tog;
+							ps_st       <= PS_IDLE;
+						end else begin
+							ps_w_idx <= ps_w_idx + 2'd1;
+						end
+					end
+				end
+
+				PS_WAIT_RD: begin
+					if (ps_rd_valid) begin
+						case (ps_r_idx)
+							2'd0: ps_rd_shift[15:0]  <= ps_rd_data;
+							2'd1: ps_rd_shift[31:16] <= ps_rd_data;
+							2'd2: ps_rd_shift[47:32] <= ps_rd_data;
+							default: ;
+						endcase
+						ps_r_idx <= ps_r_idx + 2'd1;
+						if (ps_rd_last) begin
+							ps_r_idx     <= 2'd0;
+							ps_rsp_rdata <= {ps_rd_data, ps_rd_shift[47:0]};
+							ps_rsp_tog   <= ~ps_rsp_tog;
+							if (ps_rem <= 8'd1) begin
+								ps_done_tog <= ~ps_done_tog;
+								ps_st       <= PS_IDLE;
+							end else begin
+								ps_rem       <= ps_rem - 8'd1;
+								ps_cmd_addr  <= ps_cmd_addr + 23'd4;
+								ps_cmd_valid <= 1'b1;
+								ps_st        <= PS_ISSUE;
+							end
+						end
+					end
+				end
+			endcase
 		end
 	end
 
@@ -379,7 +549,82 @@ module f3_pocket_top (
 	wire [2:0] vid_div;
 	wire [8:0] vid_hcnt, vid_vcnt;
 
-	rf_main u_main (
+	// Async SRAM controller for main CPU 128 KB work RAM (saves 128 M10K blocks)
+	wire [15:0] ext_ram_addr;
+	wire [15:0] ext_ram_wdata;
+	wire  [1:0] ext_ram_be;
+	wire        ext_ram_wr;
+	wire        ext_ram_req;
+	reg  [15:0] ext_ram_rdata = 16'd0;
+	reg         ext_ram_ack   = 1'b0;
+
+	reg  [15:0] sram_dq_out = 16'd0;
+	reg         sram_dq_oe  = 1'b0;
+	assign sram_dq = sram_dq_oe ? sram_dq_out : 16'hzzzz;
+
+	localparam [1:0] SR_IDLE = 2'd0, SR_WAIT = 2'd1, SR_DONE = 2'd2;
+	reg [1:0] sram_st = SR_IDLE;
+	reg       sram_wr_lat = 1'b0;
+
+	always @(posedge clk_sys or posedge reset) begin
+		if (reset) begin
+			sram_st     <= SR_IDLE;
+			sram_a      <= 17'd0;
+			sram_oe_n   <= 1'b1;
+			sram_we_n   <= 1'b1;
+			sram_ub_n   <= 1'b1;
+			sram_lb_n   <= 1'b1;
+			sram_dq_oe  <= 1'b0;
+			sram_dq_out <= 16'd0;
+			ext_ram_ack <= 1'b0;
+		end else begin
+			ext_ram_ack <= 1'b0;
+			case (sram_st)
+				SR_IDLE: begin
+					sram_oe_n  <= 1'b1;
+					sram_we_n  <= 1'b1;
+					sram_dq_oe <= 1'b0;
+					if (ext_ram_req) begin
+						sram_a      <= {1'b0, ext_ram_addr};
+						sram_ub_n   <= ~ext_ram_be[1];
+						sram_lb_n   <= ~ext_ram_be[0];
+						sram_wr_lat <= ext_ram_wr;
+						if (ext_ram_wr) begin
+							sram_dq_out <= ext_ram_wdata;
+							sram_dq_oe  <= 1'b1;
+							sram_we_n   <= 1'b0;
+							sram_oe_n   <= 1'b1;
+						end else begin
+							sram_dq_oe  <= 1'b0;
+							sram_we_n   <= 1'b1;
+							sram_oe_n   <= 1'b0;
+						end
+						sram_st <= SR_WAIT;
+					end
+				end
+
+				SR_WAIT: begin
+					// 1 full clk_sys (18.7 ns) settle time (> 10 ns SRAM access/write pulse)
+					sram_st <= SR_DONE;
+				end
+
+				SR_DONE: begin
+					if (!sram_wr_lat) begin
+						ext_ram_rdata <= sram_dq;
+					end
+					sram_oe_n   <= 1'b1;
+					sram_we_n   <= 1'b1;
+					sram_dq_oe  <= 1'b0;
+					ext_ram_ack <= 1'b1;
+					sram_st     <= SR_IDLE;
+				end
+
+				default: sram_st <= SR_IDLE;
+			endcase
+		end
+	end
+
+	rf_main #(.EXT_RAM(1'b1)) u_main (
 		.clk        ( clk_sys ),
 		.reset      ( cpu_reset ),
 		.prog_addr  ( cpu_prog_addr ),
@@ -425,7 +670,15 @@ module f3_pocket_top (
 		.snd_reset  ( snd_reset ),
 		.ring_ext_sel ( 1'b0 ), .ring_arm_en ( 1'b0 ), .ring_ext_we ( 1'b0 ), .ring_ext_data ( 56'd0 ),
 		.pivot_wr_cnt( ),
-		.snd_bank_o ( snd_bank ), .snd_bank_en_o( snd_bank_en )
+		.snd_bank_o ( snd_bank ), .snd_bank_en_o( snd_bank_en ),
+
+		.ext_ram_addr ( ext_ram_addr ),
+		.ext_ram_wdata( ext_ram_wdata ),
+		.ext_ram_be   ( ext_ram_be ),
+		.ext_ram_wr   ( ext_ram_wr ),
+		.ext_ram_req  ( ext_ram_req ),
+		.ext_ram_rdata( ext_ram_rdata ),
+		.ext_ram_ack  ( ext_ram_ack )
 	);
 
 	// Sprite fetch bus sharing

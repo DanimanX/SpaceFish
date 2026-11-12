@@ -51,7 +51,9 @@
 //  arrays (Propcycle, 2026-08-10).
 //============================================================================
 
-module rf_main
+module rf_main #(
+    parameter bit EXT_RAM = 1'b0
+)
 (
     input  logic        clk,             // 53.372 MHz
     input  logic        reset,
@@ -231,7 +233,16 @@ module rf_main
     input  logic [10:0] ring_raddr,
     output logic [55:0] ring_rdata,
     output logic [10:0] ring_wptr,
-    output logic        ring_full
+    output logic        ring_full,
+
+    // external 128 KB work RAM port (used when EXT_RAM = 1)
+    output logic [15:0] ext_ram_addr,
+    output logic [15:0] ext_ram_wdata,
+    output logic  [1:0] ext_ram_be,
+    output logic        ext_ram_wr,
+    output logic        ext_ram_req,
+    input  logic [15:0] ext_ram_rdata,
+    input  logic        ext_ram_ack
 );
 
     // ---- CPU -------------------------------------------------------------
@@ -290,6 +301,9 @@ module rf_main
     logic        rom_wait;
     logic        prog_valid_lat;
     logic [15:0] prog_data_lat;
+    logic        ram_wait;
+    logic        ext_ram_ack_lat;
+    logic [15:0] ext_ram_rdata_lat;
 
     // ---- CPU speed throttle ---------------------------------------------
     // The F3's 68020 runs at 16.67 MHz. This core clocks TG68K from clk_sys
@@ -345,12 +359,15 @@ module rf_main
 
     always_ff @(posedge clk) begin
         if (reset) begin
-            clkena_r  <= 1'b0;
-            rom_wait  <= 1'b0;
-            prog_req  <= 1'b0;
+            clkena_r    <= 1'b0;
+            rom_wait    <= 1'b0;
+            prog_req    <= 1'b0;
+            ram_wait    <= 1'b0;
+            ext_ram_req <= 1'b0;
         end else begin
-            prog_req <= 1'b0;
-            clkena_r <= 1'b0;
+            prog_req    <= 1'b0;
+            ext_ram_req <= 1'b0;
+            clkena_r    <= 1'b0;
 
             if (rom_wait) begin
                 // prog_valid direct, not just the latched copy: a fetch was
@@ -370,6 +387,11 @@ module rf_main
                 // falls. Faster fetch moves that boundary.
                 if (prog_valid_lat) begin
                     rom_wait <= 1'b0;
+                    clkena_r <= 1'b1;
+                end
+            end else if (ram_wait) begin
+                if (ext_ram_ack_lat) begin
+                    ram_wait <= 1'b0;
                     clkena_r <= 1'b1;
                 end
             // clkena_r, NOT the qualified clkena. Reading the qualified one
@@ -398,6 +420,13 @@ module rf_main
                     prog_addr <= a[21:1];
                     prog_req  <= 1'b1;
                     rom_wait  <= 1'b1;
+                end else if (EXT_RAM && sel_ram && (busstate == 2'b00 || busstate == 2'b10 || busstate == 2'b11)) begin
+                    ext_ram_addr  <= a[16:1];
+                    ext_ram_wdata <= zone_hit ? ({8'h00, 6'd0, zone_inj} + 16'd1) : cpu_dout;
+                    ext_ram_be    <= be;
+                    ext_ram_wr    <= (busstate == 2'b11);
+                    ext_ram_req   <= 1'b1;
+                    ram_wait      <= 1'b1;
                 end else begin
                     clkena_r <= 1'b1;
                 end
@@ -410,6 +439,14 @@ module rf_main
         else if (prog_valid) begin
             prog_valid_lat <= 1'b1;
             prog_data_lat  <= prog_data;
+        end
+    end
+
+    always_ff @(posedge clk) begin
+        if (reset || clkena) ext_ram_ack_lat <= 1'b0;
+        else if (ext_ram_ack) begin
+            ext_ram_ack_lat   <= 1'b1;
+            ext_ram_rdata_lat <= ext_ram_rdata;
         end
     end
 
@@ -720,13 +757,21 @@ module rf_main
     // neither writes (wren needs clkena) nor latches a read -- the mux is
     // invisible to it. hs_q shares the read port; the CPU's combinational
     // raddr is re-presented the cycle the mux drops back.
-    rf_bram_be #(.AW(16)) u_ram (
-        .clk(clk),
-        .waddr(hs_pause ? hs_addr : a[16:1]),
-        .wdata(hs_pause ? hs_wdata : (zone_hit ? {8'h00, 6'd0, zone_inj} + 16'd1 : cpu_dout)),
-        .wren(hs_pause ? hs_we : (cpu_wr && sel_ram && clkena)),
-        .be(hs_pause ? hs_be : be),
-        .raddr(hs_pause ? hs_addr : a[16:1]), .q(ram_q));
+    wire [15:0] int_ram_q;
+    generate
+        if (!EXT_RAM) begin : g_int_ram
+            rf_bram_be #(.AW(16)) u_ram (
+                .clk(clk),
+                .waddr(hs_pause ? hs_addr : a[16:1]),
+                .wdata(hs_pause ? hs_wdata : (zone_hit ? {8'h00, 6'd0, zone_inj} + 16'd1 : cpu_dout)),
+                .wren(hs_pause ? hs_we : (cpu_wr && sel_ram && clkena)),
+                .be(hs_pause ? hs_be : be),
+                .raddr(hs_pause ? hs_addr : a[16:1]), .q(int_ram_q));
+        end else begin : g_ext_ram
+            assign int_ram_q = 16'd0;
+        end
+    endgenerate
+    assign ram_q = EXT_RAM ? ext_ram_rdata_lat : int_ram_q;
     assign hs_q = ram_q;
 
     rf_bram_be #(.AW(13)) u_pfx (

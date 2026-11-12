@@ -221,7 +221,7 @@ assign port_tran_sck_dir = 1'b0;
 assign port_tran_sd = 1'bz;
 assign port_tran_sd_dir = 1'b0;
 
-// cram1 and sram are unused
+// cram1 is unused
 assign cram1_a     = 6'd0;
 assign cram1_dq    = 16'hzzzz;
 assign cram1_clk   = 1'b0;
@@ -233,13 +233,6 @@ assign cram1_oe_n  = 1'b1;
 assign cram1_we_n  = 1'b1;
 assign cram1_ub_n  = 1'b1;
 assign cram1_lb_n  = 1'b1;
-
-assign sram_a    = 17'd0;
-assign sram_dq   = 16'hzzzz;
-assign sram_oe_n = 1'b1;
-assign sram_we_n = 1'b1;
-assign sram_ub_n = 1'b1;
-assign sram_lb_n = 1'b1;
 
 assign dbg_tx    = 1'bZ;
 assign user1     = 1'bZ;
@@ -329,9 +322,9 @@ core_bridge_cmd icb (
     .target_dataslot_write      ( 1'b0 ),
     .target_dataslot_getfile    ( 1'b0 ),
     .target_dataslot_openfile   ( 1'b0 ),
-    .target_dataslot_ack        ( 1'b0 ),
-    .target_dataslot_done       ( 1'b0 ),
-    .target_dataslot_err        ( 3'd0 ),
+    .target_dataslot_ack        ( ),
+    .target_dataslot_done       ( ),
+    .target_dataslot_err        ( ),
     .target_dataslot_id         ( 16'd0 ),
     .target_dataslot_slotoffset ( 32'd0 ),
     .target_dataslot_bridgeaddr ( 32'd0 ),
@@ -393,6 +386,13 @@ f3_pocket_top if3 (
     .cram0_we_n         ( cram0_we_n ),
     .cram0_ub_n         ( cram0_ub_n ),
     .cram0_lb_n         ( cram0_lb_n ),
+
+    .sram_a             ( sram_a ),
+    .sram_dq            ( sram_dq ),
+    .sram_oe_n          ( sram_oe_n ),
+    .sram_we_n          ( sram_we_n ),
+    .sram_ub_n          ( sram_ub_n ),
+    .sram_lb_n          ( sram_lb_n ),
 
     .boot_done          ( boot_done ),
     .pll_locked_o       ( pll_locked_core )
