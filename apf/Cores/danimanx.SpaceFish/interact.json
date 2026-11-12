@@ -16,7 +16,7 @@
                 "type": "check",
                 "enabled": true,
                 "address": "0xF0000004",
-                "default": 0
+                "defaultval": 0
             },
             {
                 "name": "Audio Boost",
@@ -30,8 +30,9 @@
                     { "name": "4x", "value": 2 },
                     { "name": "16x", "value": 3 }
                 ],
-                "default": 0
+                "defaultval": 0
             }
-        ]
+        ],
+        "messages": null
     }
 }
