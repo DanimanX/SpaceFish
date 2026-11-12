@@ -21,6 +21,7 @@ module pk_io #(
 
 	// ---- Core side ---------------------------------------------------------
 	input  wire        clk_sys,          // 53.37 MHz
+	input  wire        clk_ram,          // 97.03 MHz (ioctl_* & FIFO read domain)
 	input  wire        pll_locked,
 
 	output reg  [127:0] status = 128'd0,
@@ -37,7 +38,8 @@ module pk_io #(
 	output reg  [15:0] ioctl_dout = 16'd0,
 	input  wire        ioctl_wait,
 
-	output reg         boot_done = 1'b0
+	output reg         boot_done = 1'b0,
+	output reg         fifo_ovf = 1'b0
 );
 
 	// -------------------------------------------------------------------------
@@ -109,34 +111,44 @@ module pk_io #(
 	wire fifo_full;
 	reg  fifo_rd = 1'b0;
 
+	reg fifo_ovf_74 = 1'b0;
+	always @(posedge clk_74a) begin
+		if (fifo_wr && fifo_full) fifo_ovf_74 <= 1'b1;
+	end
+	reg [1:0] ovf_sync = 2'd0;
+	always @(posedge clk_sys) begin
+		ovf_sync <= {ovf_sync[0], fifo_ovf_74};
+		fifo_ovf <= ovf_sync[1];
+	end
+
 	dcfifo #(
 		.intended_device_family("Cyclone V"),
-		.lpm_numwords(256),
+		.lpm_numwords(1024),
 		.lpm_showahead("OFF"),
 		.lpm_type("dcfifo"),
 		.lpm_width(32),
-		.lpm_widthu(8),
+		.lpm_widthu(10),
 		.overflow_checking("ON"),
 		.underflow_checking("OFF"),
 		.use_eab("ON")
 	) rom_fifo (
 		.data(fifo_din), .wrclk(clk_74a), .wrreq(fifo_wr),
-		.rdclk(clk_sys), .rdreq(fifo_rd), .q(fifo_dout),
+		.rdclk(clk_ram), .rdreq(fifo_rd), .q(fifo_dout),
 		.rdempty(fifo_empty), .wrfull(fifo_full),
 		.aclr(1'b0), .eccstatus(), .rdfull(), .rdusedw(), .wrempty(), .wrusedw()
 	);
 
-	// Synchronize header arrival & dataslot completion to clk_sys
+	// Synchronize header arrival & dataslot completion to clk_ram
 	reg [2:0] hdr_sync;
 	reg [1:0] dsc_sync;
-	always @(posedge clk_sys) begin
+	always @(posedge clk_ram) begin
 		hdr_sync <= {hdr_sync[1:0], header_seen_74};
 		dsc_sync <= {dsc_sync[0], apf_dataslot_complete};
 	end
-	wire hdr_seen_sys     = hdr_sync[1];
-	wire dsc_complete_sys = dsc_sync[1];
+	wire hdr_seen_ram     = hdr_sync[1];
+	wire dsc_complete_ram = dsc_sync[1];
 
-	// ioctl FSM on clk_sys
+	// ioctl FSM on clk_ram (97.03 MHz, zero-CDC with SDRAM)
 	localparam [3:0]
 		S_IDLE        = 4'd0,
 		S_CFG1        = 4'd1, // Emit index 1 (cfg low byte)
@@ -153,9 +165,9 @@ module pk_io #(
 
 	reg [3:0]  state = S_IDLE;
 	reg [31:0] lat_word = 32'd0;
-	reg [15:0] latched_cfg_sys = 16'd0;
+	reg [15:0] latched_cfg_ram = 16'd0;
 
-	always @(posedge clk_sys or negedge pll_locked) begin
+	always @(posedge clk_ram or negedge pll_locked) begin
 		if (!pll_locked) begin
 			state          <= S_IDLE;
 			ioctl_download <= 1'b0;
@@ -171,8 +183,8 @@ module pk_io #(
 
 			case (state)
 				S_IDLE: begin
-					if (hdr_seen_sys) begin
-						latched_cfg_sys <= latched_cfg_74;
+					if (hdr_seen_ram) begin
+						latched_cfg_ram <= latched_cfg_74;
 						ioctl_download  <= 1'b1;
 						state           <= S_CFG1;
 					end
@@ -181,7 +193,7 @@ module pk_io #(
 				S_CFG1: begin
 					ioctl_index <= 8'd1;
 					ioctl_addr  <= 27'd0;
-					ioctl_dout  <= {8'd0, latched_cfg_sys[7:0]};
+					ioctl_dout  <= {8'd0, latched_cfg_ram[7:0]};
 					ioctl_wr    <= 1'b1;
 					state       <= S_CFG1_ACK;
 				end
@@ -193,7 +205,7 @@ module pk_io #(
 				S_CFG2: begin
 					ioctl_index <= 8'd2;
 					ioctl_addr  <= 27'd0;
-					ioctl_dout  <= {8'd0, latched_cfg_sys[15:8]};
+					ioctl_dout  <= {8'd0, latched_cfg_ram[15:8]};
 					ioctl_wr    <= 1'b1;
 					state       <= S_CFG2_ACK;
 				end
@@ -210,7 +222,7 @@ module pk_io #(
 					if (!fifo_empty) begin
 						fifo_rd <= 1'b1;
 						state   <= S_LOAD_LAT;
-					end else if (dsc_complete_sys) begin
+					end else if (dsc_complete_ram) begin
 						state <= S_RUN;
 					end
 				end

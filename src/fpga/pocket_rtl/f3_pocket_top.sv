@@ -116,6 +116,8 @@ module f3_pocket_top (
 	wire [15:0]  ioctl_dout;
 	wire         ioctl_wait;
 
+	wire         fifo_ovf;
+
 	pk_io u_pk_io (
 		.clk_74a        ( clk_74a ),
 		.apf_reset_n    ( apf_reset_n ),
@@ -126,6 +128,7 @@ module f3_pocket_top (
 		.apf_dataslot_complete ( apf_dataslot_complete ),
 
 		.clk_sys        ( clk_sys ),
+		.clk_ram        ( clk_ram ),
 		.pll_locked     ( pll_locked ),
 		.status         ( status ),
 		.joystick_0     ( joystick_0 ),
@@ -140,18 +143,28 @@ module f3_pocket_top (
 		.ioctl_addr     ( ioctl_addr ),
 		.ioctl_dout     ( ioctl_dout ),
 		.ioctl_wait     ( ioctl_wait ),
-		.boot_done      ( boot_done )
+		.boot_done      ( boot_done ),
+		.fifo_ovf       ( fifo_ovf )
 	);
+
+	reg [1:0] dl_sync = 2'd0;
+	reg [1:0] bd_sync = 2'd0;
+	always @(posedge clk_sys) begin
+		dl_sync <= {dl_sync[0], ioctl_download};
+		bd_sync <= {bd_sync[0], boot_done};
+	end
+	wire ioctl_download_sys = dl_sync[1];
+	wire boot_done_sys      = bd_sync[1];
 
 	wire reset = !pll_locked | core_reset_btn;
 	wire bus_reset = reset;
 
 	// -------------------------------------------------------------------------
-	// 3. Game Config Register Latch
+	// 3. Game Config Register Latch (latched on clk_ram during S_CFG1/2)
 	// -------------------------------------------------------------------------
 	reg [15:0] game_cfg = 16'd0;
-	always @(posedge clk_sys) begin
-		if (reset) game_cfg <= 16'd0;
+	always @(posedge clk_ram or negedge pll_locked) begin
+		if (!pll_locked) game_cfg <= 16'd0;
 		else if (ioctl_wr && ioctl_index == 8'd1) game_cfg[7:0]  <= ioctl_dout[7:0];
 		else if (ioctl_wr && ioctl_index == 8'd2) game_cfg[15:8] <= ioctl_dout[7:0];
 	end
@@ -190,17 +203,10 @@ module f3_pocket_top (
 	reg  [26:1] ld_addr;
 	reg  [15:0] ld_din;
 	reg         ld_busy;
-	reg         ld_done_t = 1'b0;
 
-	always @(posedge clk_ram) if (ch3_ready && ioctl_download) ld_done_t <= ~ld_done_t;
-	reg ld_d1, ld_d2, ld_d3;
-	always @(posedge clk_sys) begin
-		ld_d1 <= ld_done_t; ld_d2 <= ld_d1; ld_d3 <= ld_d2;
-	end
-	wire ld_done_edge = ld_d2 ^ ld_d3;
 	wire dl_word = ioctl_wr && (ioctl_index == 8'd0);
 
-	always @(posedge clk_sys) begin
+	always @(posedge clk_ram) begin
 		if (!pll_locked) begin
 			ld_req <= 1'b0; ld_busy <= 1'b0;
 		end else begin
@@ -209,7 +215,7 @@ module f3_pocket_top (
 				ld_din  <= (ioctl_addr < 27'h200000) ? {ioctl_dout[7:0], ioctl_dout[15:8]} : ioctl_dout;
 				ld_req  <= 1'b1;
 				ld_busy <= 1'b1;
-			end else if (ld_busy && ld_done_edge) begin
+			end else if (ld_busy && ch3_ready) begin
 				ld_req  <= 1'b0;
 				ld_busy <= 1'b0;
 			end
@@ -499,7 +505,7 @@ module f3_pocket_top (
 	// -------------------------------------------------------------------------
 	// 6. Taito F3 Motherboard (rf_main) & Video Pipeline (vpipe)
 	// -------------------------------------------------------------------------
-	wire cpu_reset = reset | ioctl_download;
+	wire cpu_reset = reset | ioctl_download_sys | !boot_done_sys;
 	wire [21:1] cpu_prog_addr;
 	wire        cpu_prog_req;
 	wire [15:0] prog_data;
@@ -823,8 +829,9 @@ module f3_pocket_top (
 		.vsync      ( vid_vsync )
 	);
 
-	// Direct APF video generation
-	assign video_rgb = game_rgb;
+	// Direct APF video generation (+ red corner dot if ROM FIFO ever overflowed)
+	wire dbg_ovf_dot = fifo_ovf && (vid_hcnt >= 9'd46 && vid_hcnt < 9'd54) && (vid_vcnt >= 9'd31 && vid_vcnt < 9'd39);
+	assign video_rgb = dbg_ovf_dot ? 24'hFF0000 : game_rgb;
 	assign video_de  = !hblank && !vblank;
 	assign video_hs  = vid_hsync;
 	assign video_vs  = vid_vsync;
