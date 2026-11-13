@@ -47,10 +47,23 @@ An openFPGA port of the **Taito F3 Arcade System** for the **Analogue Pocket**, 
 | **Twin Qix** | `twinqix` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
 | **Space Invaders '95** | `spcinv95` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
 | **Twin Cobra II** | `tcobra2` | `f3` (232 lines) | Profile 1 (42.0 MB) | **Supported** |
-| **Kaiser Knuckle / Dan-Ku-Ga** | `kaiserkn` | `f3` (232 lines) | Profile 1 (42.0 MB) | **Supported** |
+| **Kaiser Knuckle** | `kaiserkn` | `f3` (232 lines) | Profile 1 (42.0 MB) | **Supported** |
+| **Dan-Ku-Ga** | `dankuga` | `f3` (232 lines) | Profile 1 (42.0 MB) | **Supported** |
 | **Arabian Magic** | `arabianm` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
 | **Riding Fight** | `ridingf` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
 | **Ring Rage** | `ringrage` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **Command War** | `commandw` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **International Cup 94** | `intcup94` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **Land Maker** | `landmakr` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **Light Bringer** | `lightbr` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **Puchi Carat** | `puchicar` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **Quiz Theater - 3tsu no Monogatari** | `qtheater` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **Quiz de Hyuuhyuu** | `quizhuhu` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **Recalhorn** | `recalh` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **Super Cup Finals** | `scfinals` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **Taito Cup Finals** | `cupfinal` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **Taito Power Goal** | `pwrgoal` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
+| **Top Ranking Stars** | `trstar` | `f3` (232 lines) | Profile 0 (18.5 MB) | **Supported** |
 
 ---
 
