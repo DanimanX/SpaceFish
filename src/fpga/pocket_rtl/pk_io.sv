@@ -161,7 +161,8 @@ module pk_io #(
 		S_LOAD_LO_INC = 4'd8,
 		S_LOAD_HI     = 4'd9, // Emit high 16-bit word
 		S_LOAD_HI_INC = 4'd10,
-		S_RUN         = 4'd11;
+		S_RUN         = 4'd11,
+		S_LOAD_WAIT   = 4'd12; // 1-cycle dcfifo registered output latency
 
 	reg [3:0]  state = S_IDLE;
 	reg [31:0] lat_word = 32'd0;
@@ -223,11 +224,15 @@ module pk_io #(
 					if (!fifo_empty) begin
 						dsc_wait <= 4'd0;
 						fifo_rd  <= 1'b1;
-						state    <= S_LOAD_LAT;
+						state    <= S_LOAD_WAIT;
 					end else if (dsc_complete_ram) begin
 						if (&dsc_wait) state <= S_RUN;
 						else dsc_wait <= dsc_wait + 4'd1;
 					end
+				end
+
+				S_LOAD_WAIT: begin
+					state <= S_LOAD_LAT;
 				end
 
 				S_LOAD_LAT: begin
