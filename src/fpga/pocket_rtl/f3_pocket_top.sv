@@ -729,6 +729,13 @@ module f3_pocket_top (
 		.pivot_wr_cnt( ),
 		.snd_bank_o ( snd_bank ), .snd_bank_en_o( snd_bank_en ),
 
+		.piv_ch_addr  ( ch8_addr ),
+		.piv_ch_din   ( ch8_din ),
+		.piv_ch_be    ( ch8_be ),
+		.piv_ch_rnw   ( ch8_rnw ),
+		.piv_ch_req   ( ch8_req ),
+		.piv_ch_ready ( ch8_ready ),
+		.piv_ch_dout  ( ch8_dout ),
 		.ext_ram_addr ( ext_ram_addr ),
 		.ext_ram_wdata( ext_ram_wdata ),
 		.ext_ram_be   ( ext_ram_be ),
