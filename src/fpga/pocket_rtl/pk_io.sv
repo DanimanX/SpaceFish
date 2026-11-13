@@ -166,6 +166,7 @@ module pk_io #(
 	reg [3:0]  state = S_IDLE;
 	reg [31:0] lat_word = 32'd0;
 	reg [15:0] latched_cfg_ram = 16'd0;
+	reg [3:0]  dsc_wait = 4'd0;
 
 	always @(posedge clk_ram or negedge pll_locked) begin
 		if (!pll_locked) begin
@@ -220,10 +221,12 @@ module pk_io #(
 
 				S_LOAD_RD: begin
 					if (!fifo_empty) begin
-						fifo_rd <= 1'b1;
-						state   <= S_LOAD_LAT;
+						dsc_wait <= 4'd0;
+						fifo_rd  <= 1'b1;
+						state    <= S_LOAD_LAT;
 					end else if (dsc_complete_ram) begin
-						state <= S_RUN;
+						if (&dsc_wait) state <= S_RUN;
+						else dsc_wait <= dsc_wait + 4'd1;
 					end
 				end
 
