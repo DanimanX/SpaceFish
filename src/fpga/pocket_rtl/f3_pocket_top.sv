@@ -532,7 +532,16 @@ module f3_pocket_top (
 		.ch_rnw    ( ch3_rnw_pb )
 	);
 
-	// Video wires
+	wire [31:0] dbg_wr_count, dbg_wr_hash, dbg_last_pc, dbg_cpu_addr;
+	wire [3:0]  dbg_wait_state;
+	wire [15:0] dbg_frame_cnt, dbg_irq2_cnt, dbg_irq3_cnt;
+	wire [15:0] dbg_pf_wr_cnt, dbg_spr_wr_cnt, dbg_pal_wr_cnt, dbg_line_wr_cnt;
+	wire        dbg_trap_oor;
+	reg  [31:0] dbg_dl_bytes = 32'd0;
+	always @(posedge clk_ram) begin
+		if (!pll_locked) dbg_dl_bytes <= 32'd0;
+		else if (dl_word && !ld_busy) dbg_dl_bytes <= dbg_dl_bytes + 32'd2;
+	end
 	wire [7:0][15:0] vctrl0, vctrl1;
 	wire [13:0] v_pal_addr;   wire [15:0] v_pal_q;
 	wire [13:0] v_pf_addr;    wire [15:0] v_pf_q;
@@ -702,10 +711,10 @@ module f3_pocket_top (
 		.v_pivot_addr( v_pivot_addr ),.v_pivot_q( v_pivot_q ),
 		.v_spr_addr ( v_spr_addr ),   .v_spr_q ( v_spr_q ),
 
-		.wr_count   ( ), .wr_hash ( ), .last_pc ( ), .trap_oor ( ),
-		.frame_cnt  ( ), .irq2_cnt ( ), .irq3_cnt ( ),
-		.pf_wr_cnt  ( ), .spr_wr_cnt ( ), .spr_wr_stb ( spr_wr_stb ),
-		.pal_wr_cnt ( ), .pal_wr_hi ( ), .pal_wr_lo ( ), .line_wr_cnt ( ),
+		.wr_count   ( dbg_wr_count ), .wr_hash ( dbg_wr_hash ), .last_pc ( dbg_last_pc ), .trap_oor ( dbg_trap_oor ),
+		.frame_cnt  ( dbg_frame_cnt ), .irq2_cnt ( dbg_irq2_cnt ), .irq3_cnt ( dbg_irq3_cnt ),
+		.pf_wr_cnt  ( dbg_pf_wr_cnt ), .spr_wr_cnt ( dbg_spr_wr_cnt ), .spr_wr_stb ( spr_wr_stb ),
+		.pal_wr_cnt ( dbg_pal_wr_cnt ), .pal_wr_hi ( ), .pal_wr_lo ( ), .line_wr_cnt ( dbg_line_wr_cnt ),
 		.vid_vcnt   ( vid_vcnt ), .vctrl_wr_dbg ( ),
 		.cpu_speed  ( 3'd0 ), .cpu_spin ( ),
 		.zone_inj   ( 2'd0 ),
@@ -726,7 +735,9 @@ module f3_pocket_top (
 		.ext_ram_wr   ( ext_ram_wr ),
 		.ext_ram_req  ( ext_ram_req ),
 		.ext_ram_rdata( ext_ram_rdata ),
-		.ext_ram_ack  ( ext_ram_ack )
+		.ext_ram_ack  ( ext_ram_ack ),
+		.dbg_cpu_addr ( dbg_cpu_addr ),
+		.dbg_wait_state( dbg_wait_state )
 	);
 
 	// Sprite fetch bus sharing
@@ -806,14 +817,15 @@ module f3_pocket_top (
 
 	// Raster timing generator (MAME taito_f3.cpp)
 	wire vid_hsync, vid_vsync;
+	wire [7:0] dbg_vid_r, dbg_vid_g, dbg_vid_b;
 	rayforce_video u_vid_timing (
 		.clk        ( clk_sys ),
 		.reset      ( reset ),
-		.dl_active  ( 1'b0 ), .dl_seen ( 1'b0 ), .dl_bytes ( 32'd0 ), .dl_sum ( 32'd0 ), .dl_index ( 8'd0 ),
-		.trap_oor   ( 1'b0 ), .wr_count ( 32'd0 ), .wr_hash ( 32'd0 ), .last_pc ( 32'd0 ),
-		.bist_sum   ( 32'd0 ), .bist_done ( 1'b0 ),
-		.frame_cnt  ( 16'd0 ), .irq2_cnt ( 16'd0 ), .irq3_cnt ( 16'd0 ),
-		.pf_wr_cnt  ( 16'd0 ), .spr_wr_cnt ( 16'd0 ), .pal_wr_cnt ( 16'd0 ), .line_wr_cnt ( 16'd0 ),
+		.dl_active  ( ioctl_download_sys ), .dl_seen ( boot_done_sys ), .dl_bytes ( dbg_dl_bytes ), .dl_sum ( {16'd0, game_cfg} ), .dl_index ( ioctl_index ),
+		.trap_oor   ( dbg_trap_oor ), .wr_count ( dbg_wr_count ), .wr_hash ( dbg_wr_hash ), .last_pc ( dbg_last_pc ),
+		.bist_sum   ( {20'd0, dbg_wait_state, 2'd0, sram_st, 2'd0, ch3_req_pb, main_ram_pend, snd_ram_pend, ext_ram_ack} ), .bist_done ( 1'b0 ),
+		.frame_cnt  ( dbg_frame_cnt ), .irq2_cnt ( dbg_irq2_cnt ), .irq3_cnt ( dbg_irq3_cnt ),
+		.pf_wr_cnt  ( dbg_cpu_addr[31:16] ), .spr_wr_cnt ( dbg_cpu_addr[15:0] ), .pal_wr_cnt ( dbg_pal_wr_cnt ), .line_wr_cnt ( ext_ram_rdata ),
 		.v_pal_addr ( ), .v_pal_q ( 16'd0 ),
 		.vis_mode   ( cfg_vis ),
 		.rate_60    ( 1'b0 ),
@@ -822,16 +834,15 @@ module f3_pocket_top (
 		.hcnt_o     ( vid_hcnt ),
 		.vcnt_o     ( vid_vcnt ),
 		.ce_pix     ( ),
-		.r          ( ), .g ( ), .b ( ),
+		.r          ( dbg_vid_r ), .g ( dbg_vid_g ), .b ( dbg_vid_b ),
 		.hblank     ( hblank ),
 		.vblank     ( vblank ),
 		.hsync      ( vid_hsync ),
 		.vsync      ( vid_vsync )
 	);
 
-	// Direct APF video generation (+ red corner dot if ROM FIFO ever overflowed)
-	wire dbg_ovf_dot = fifo_ovf && (vid_hcnt >= 9'd46 && vid_hcnt < 9'd54) && (vid_vcnt >= 9'd31 && vid_vcnt < 9'd39);
-	assign video_rgb = dbg_ovf_dot ? 24'hFF0000 : game_rgb;
+	// Direct APF video generation (+ rayforce_video self-test hex overlay while pal_wr_cnt == 0)
+	assign video_rgb = (dbg_pal_wr_cnt == 16'd0) ? {dbg_vid_r, dbg_vid_g, dbg_vid_b} : game_rgb;
 	assign video_de  = !hblank && !vblank;
 	assign video_hs  = vid_hsync;
 	assign video_vs  = vid_vsync;

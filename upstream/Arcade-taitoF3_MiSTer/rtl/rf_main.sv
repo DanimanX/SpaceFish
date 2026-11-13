@@ -243,7 +243,9 @@ module rf_main #(
     output logic        ext_ram_wr,
     output logic        ext_ram_req,
     input  logic [15:0] ext_ram_rdata,
-    input  logic        ext_ram_ack
+    input  logic        ext_ram_ack,
+    output logic [31:0] dbg_cpu_addr,
+    output logic [3:0]  dbg_wait_state
 );
 
     // ---- CPU -------------------------------------------------------------
@@ -1232,5 +1234,7 @@ module rf_main #(
             if (!sel_rom && !sel_ram) trap_oor <= 1'b1;
         end
     end
+    assign dbg_cpu_addr   = cpu_addr;
+    assign dbg_wait_state = {ram_wait, rom_wait, busstate};
 
 endmodule
