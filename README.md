@@ -185,6 +185,17 @@ See [`PORTING.md`](PORTING.md) for full architectural documentation, including:
 
 ---
 
+## Contributing
+
+Contributions, test reports, and hardware verification are welcome!
+
+- **Porting & Architectural Reference:** Review [`PORTING.md`](PORTING.md) for details on memory bus arbiter channels, PSRAM framebuffer integration, and PLL clock synthesis.
+- **ROM Generation & Packaging:** Use `tools/build_rom.py` and `tools/package_pocket.py` to produce properly tagged `.rom` files and openFPGA release bundles.
+- **Game Compatibility & Edge Cases:** Refer to test cases documented in [`PORTING.md`](PORTING.md) (such as *Gekirindan*, *Ray Force*, and *Darius Gaiden*) to verify video visarea, extend mode flags, and sound CPU synchronization.
+- **Pull Requests:** Please ensure changes compile cleanly in Quartus (`./tools/build_pocket.sh --fit-only` or full build) without violating the Analogue Pocket's 308 M10K block limit.
+
+---
+
 ## License & Credits
 
 - Port developed by **DanimanX**.
