@@ -115,6 +115,7 @@ module f3_pocket_top (
 	wire [31:0]  joystick_1;
 	wire         core_reset_btn;
 	wire         service_mode;
+	wire         dbg_overlay;
 	wire [1:0]   audio_boost;
 
 	wire         ioctl_download;
@@ -143,6 +144,7 @@ module f3_pocket_top (
 		.joystick_1     ( joystick_1 ),
 		.core_reset_btn ( core_reset_btn ),
 		.service_mode   ( service_mode ),
+		.dbg_overlay    ( dbg_overlay ),
 		.audio_boost    ( audio_boost ),
 
 		.ioctl_download ( ioctl_download ),
@@ -713,6 +715,8 @@ module f3_pocket_top (
 
 	wire [31:0] dbg_wr_count, dbg_wr_hash, dbg_last_pc, dbg_cpu_addr;
 	wire [3:0]  dbg_wait_state;
+	wire        dbg_wd_rst;
+	wire [23:0] dbg_cpu_a;
 	wire [15:0] dbg_frame_cnt, dbg_irq2_cnt, dbg_irq3_cnt;
 	wire [15:0] dbg_pf_wr_cnt, dbg_spr_wr_cnt, dbg_pal_wr_cnt, dbg_line_wr_cnt;
 	wire        dbg_trap_oor;
@@ -971,8 +975,44 @@ module f3_pocket_top (
 		.ext_ram_rdata( ext_ram_rdata ),
 		.ext_ram_ack  ( ext_ram_ack ),
 		.dbg_cpu_addr ( dbg_cpu_addr ),
-		.dbg_wait_state( dbg_wait_state )
+		.dbg_wait_state( dbg_wait_state ),
+		.dbg_wd_rst   ( dbg_wd_rst ),
+		.dbg_cpu_a    ( dbg_cpu_a )
 	);
+
+	// -------------------------------------------------------------------------
+	// Watchdog diagnostic latches. Cleared ONLY by !pll_locked -- never by
+	// reset or cpu_reset -- so a watchdog reboot leaves its evidence on screen
+	// after the reboot has passed (cpu_reset clears every in-core counter).
+	// -------------------------------------------------------------------------
+	reg         dbg_wd_rst_d  = 1'b0;
+	reg   [7:0] dbg_wd_cnt    = 8'd0;
+	reg  [23:0] dbg_wd_addr   = 24'd0;
+	reg  [15:0] dbg_wd_frame  = 16'd0;
+	reg  [15:0] dbg_vbl_cnt   = 16'd0;   // vblank edges since the last cpu_reset end
+	reg         dbg_cpu_reset_d = 1'b0;
+	always @(posedge clk_sys) begin
+		if (!pll_locked) begin
+			dbg_wd_rst_d  <= 1'b0;
+			dbg_wd_cnt    <= 8'd0;
+			dbg_wd_addr   <= 24'd0;
+			dbg_wd_frame  <= 16'd0;
+			dbg_vbl_cnt   <= 16'd0;
+		end else begin
+			dbg_wd_rst_d <= dbg_wd_rst;
+			if (cpu_reset) dbg_vbl_cnt <= 16'd0;
+			else if (vbl_rise && dbg_vbl_cnt != 16'hFFFF) dbg_vbl_cnt <= dbg_vbl_cnt + 16'd1;
+			if (dbg_wd_rst && !dbg_wd_rst_d) begin
+				if (dbg_wd_cnt != 8'hFF) dbg_wd_cnt <= dbg_wd_cnt + 8'd1;
+				if (dbg_wd_cnt == 8'd0) begin
+					dbg_wd_addr  <= dbg_cpu_a;
+					dbg_wd_frame <= dbg_vbl_cnt;
+				end
+			end
+		end
+	end
+	wire [31:0] dbg_rec;
+	wire [15:0] dbg_rec_drop = dbg_rec[15:0];   // rf_video_pipe: sprite rows dropped (peak-hold)
 
 	// Sprite fetch bus sharing
 	wire [26:1] spr_a_lo_addr, spr_a_hi_addr, spr_b_lo_addr, spr_b_hi_addr;
@@ -1034,7 +1074,7 @@ module f3_pocket_top (
 
 		.rgb          ( game_rgb ),
 		.dbg_lines    ( ), .dbg_fetch ( ), .dbg_max ( ),
-		.dbg_nz       ( ), .dbg_spr ( ), .dbg_rec ( ),
+		.dbg_nz       ( ), .dbg_spr ( ), .dbg_rec ( dbg_rec ),
 		.dbg_sfetch   ( ), .dbg_short ( ), .dbg_fold ( ),
 		.spr_wr_stb   ( spr_wr_stb ), .dbg_tear ( ),
 		.dbg_seq_rec01( ), .dbg_seq_rec23( ), .dbg_seq_nspr01( ), .dbg_seq_nspr23( ), .dbg_seq_ovr( ),
@@ -1058,8 +1098,16 @@ module f3_pocket_top (
 		.dl_active  ( ioctl_download_sys ), .dl_seen ( boot_done_sys ), .dl_bytes ( dbg_dl_bytes ), .dl_sum ( {dbg_rom_w0, dbg_rom_w1} ), .dl_index ( {fifo_ovf, 3'b000, dbg_rst_cnt} ),
 		.trap_oor   ( dbg_trap_oor ), .wr_count ( dbg_wr_count ), .wr_hash ( dbg_wr_hash ), .last_pc ( dbg_last_pc ),
 		.bist_sum   ( {sdram_err_cnt, sram_err_cnt} ), .bist_done ( sdram_bist_done_sys ),
-		.frame_cnt  ( dbg_frame_cnt ), .irq2_cnt ( dbg_irq2_cnt ), .irq3_cnt ( dbg_irq3_cnt ),
-		.pf_wr_cnt  ( dbg_rom_w2 ), .spr_wr_cnt ( dbg_rom_w3 ), .pal_wr_cnt ( dbg_pal_wr_cnt ), .line_wr_cnt ( sdram_first_bad ),
+		// Rows 7/9/10 show the ROM/SDRAM load proofs at boot, and the watchdog
+		// evidence while the Debug Overlay interact is set:
+		//   row 7  : frame_cnt | sprite rows dropped
+		//   row 9  : frame of 1st watchdog reset | wd count, addr[23:16]
+		//   row 10 : addr[15:0] of 1st watchdog reset
+		.frame_cnt  ( dbg_frame_cnt ), .irq2_cnt ( dbg_overlay ? dbg_rec_drop : dbg_irq2_cnt ), .irq3_cnt ( dbg_irq3_cnt ),
+		.pf_wr_cnt  ( dbg_overlay ? dbg_wd_frame : dbg_rom_w2 ),
+		.spr_wr_cnt ( dbg_overlay ? {dbg_wd_cnt, dbg_wd_addr[23:16]} : dbg_rom_w3 ),
+		.pal_wr_cnt ( dbg_pal_wr_cnt ),
+		.line_wr_cnt( dbg_overlay ? dbg_wd_addr[15:0] : sdram_first_bad ),
 		.v_pal_addr ( ), .v_pal_q ( 16'd0 ),
 		.vis_mode   ( cfg_vis ),
 		.rate_60    ( 1'b0 ),
@@ -1075,8 +1123,9 @@ module f3_pocket_top (
 		.vsync      ( vid_vsync )
 	);
 
-	// Direct APF video generation (+ rayforce_video self-test hex overlay while pal_wr_cnt == 0)
-	assign video_rgb = (dbg_pal_wr_cnt == 16'd0) ? {dbg_vid_r, dbg_vid_g, dbg_vid_b} : game_rgb;
+	// Direct APF video generation (+ rayforce_video self-test hex overlay while
+	// pal_wr_cnt == 0, or on demand while the Debug Overlay interact is set)
+	assign video_rgb = (dbg_pal_wr_cnt == 16'd0 || dbg_overlay) ? {dbg_vid_r, dbg_vid_g, dbg_vid_b} : game_rgb;
 	assign video_de  = !hblank && !vblank;
 	assign video_hs  = vid_hsync;
 	assign video_vs  = vid_vsync;

@@ -131,7 +131,7 @@ module rf_es5505
     // 256 deep: the driver sets a voice up with a burst of ~100 writes a
     // few hundred ns apart, more than one sample period holds (64 was not
     // enough -- the write that started the first voice was lost)
-    logic [23:0] wq [0:255];
+    (* ramstyle = "MLAB, no_rw_check" *) logic [23:0] wq [0:255];
     logic  [7:0] wq_wp, wq_rp;
     wire         wq_empty = (wq_wp == wq_rp);
     wire         wq_full  = (wq_wp + 8'd1 == wq_rp);

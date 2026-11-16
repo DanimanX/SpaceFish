@@ -245,7 +245,11 @@ module rf_main #(
     input  logic [15:0] ext_ram_rdata,
     input  logic        ext_ram_ack,
     output logic [31:0] dbg_cpu_addr,
-    output logic [3:0]  dbg_wait_state
+    output logic [3:0]  dbg_wait_state,
+    // DIAGNOSTIC (Pocket build): the watchdog reset pulse and the CPU bus
+    // address live, so the top can count/qualify watchdog reboots.
+    output logic        dbg_wd_rst,
+    output logic [23:0] dbg_cpu_a
 );
 
     // ---- CPU -------------------------------------------------------------
@@ -1236,5 +1240,7 @@ module rf_main #(
     end
     assign dbg_cpu_addr   = cpu_addr;
     assign dbg_wait_state = {ram_wait, rom_wait, busstate};
+    assign dbg_wd_rst     = wd_rst;
+    assign dbg_cpu_a      = a;
 
 endmodule

@@ -29,6 +29,7 @@ module pk_io #(
 	output reg  [31:0] joystick_1 = 32'd0,
 	output reg         core_reset_btn = 1'b0,
 	output reg         service_mode = 1'b0,
+	output reg         dbg_overlay = 1'b0,
 	output reg  [1:0]  audio_boost = 2'd0,
 
 	output reg         ioctl_download = 1'b0,
@@ -47,6 +48,7 @@ module pk_io #(
 	// -------------------------------------------------------------------------
 	reg reset_tog_74 = 1'b0;   // toggles on each Reset Core action (CDC-safe)
 	reg service_check_74 = 1'b0;
+	reg dbg_overlay_74 = 1'b0;
 	reg [1:0] boost_list_74 = 2'd0;
 
 	// The Pocket menu's own reset arrives as host commands Reset Enter/Exit,
@@ -64,6 +66,8 @@ module pk_io #(
 				service_check_74 <= bridge_wr_data[0];
 			end else if (bridge_addr == (INTERACT_BASE + 32'h8)) begin
 				boost_list_74 <= bridge_wr_data[1:0];
+			end else if (bridge_addr == (INTERACT_BASE + 32'hC)) begin
+				dbg_overlay_74 <= bridge_wr_data[0];
 			end
 		end
 	end
@@ -74,11 +78,13 @@ module pk_io #(
 	// stretched to 65536 clk_sys cycles (~1.2 ms) so every block sees it.
 	reg [2:0] rst_act_sync = 3'd0;
 	reg [1:0] srv_sync;
+	reg [1:0] ovl_sync;
 	reg [1:0] bst_sync;
 	reg [15:0] rst_stretch = 16'd0;
 	always @(posedge clk_sys) begin
 		rst_act_sync <= {rst_act_sync[1:0], reset_tog_74};
 		srv_sync     <= {srv_sync[0], service_check_74};
+		ovl_sync     <= {ovl_sync[0], dbg_overlay_74};
 		bst_sync     <= boost_list_74; // static select
 
 		if (rst_act_sync[2] ^ rst_act_sync[1]) rst_stretch <= 16'hFFFF;
@@ -86,6 +92,7 @@ module pk_io #(
 
 		core_reset_btn <= (rst_stretch != 16'd0);
 		service_mode   <= srv_sync[1];
+		dbg_overlay    <= ovl_sync[1];
 		audio_boost    <= bst_sync;
 		status[2]      <= srv_sync[1]; // MiSTer status[2] = Service Mode
 		status[17:16]  <= bst_sync;    // MiSTer status[17:16] = Audio Boost

@@ -22,6 +22,17 @@
                 "defaultval": 0
             },
             {
+                "name": "Debug Overlay",
+                "id": 3,
+                "type": "check",
+                "enabled": true,
+                "persist": false,
+                "writeonly": true,
+                "address": "0xF000000C",
+                "value": 1,
+                "defaultval": 0
+            },
+            {
                 "name": "Audio Boost",
                 "id": 2,
                 "type": "list",
