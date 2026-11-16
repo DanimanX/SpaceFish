@@ -124,7 +124,7 @@ module pk_io #(
 	dcfifo #(
 		.intended_device_family("Cyclone V"),
 		.lpm_numwords(1024),
-		.lpm_showahead("OFF"),
+		.lpm_showahead("ON"),
 		.lpm_type("dcfifo"),
 		.lpm_width(32),
 		.lpm_widthu(10),
@@ -161,13 +161,12 @@ module pk_io #(
 		S_LOAD_LO_INC = 4'd8,
 		S_LOAD_HI     = 4'd9, // Emit high 16-bit word
 		S_LOAD_HI_INC = 4'd10,
-		S_RUN         = 4'd11,
-		S_LOAD_WAIT   = 4'd12; // 1-cycle dcfifo registered output latency
+		S_RUN         = 4'd11;
 
 	reg [3:0]  state = S_IDLE;
 	reg [31:0] lat_word = 32'd0;
 	reg [15:0] latched_cfg_ram = 16'd0;
-	reg [3:0]  dsc_wait = 4'd0;
+	reg [7:0]  dsc_wait = 8'd0;
 
 	always @(posedge clk_ram or negedge pll_locked) begin
 		if (!pll_locked) begin
@@ -222,22 +221,14 @@ module pk_io #(
 
 				S_LOAD_RD: begin
 					if (!fifo_empty) begin
-						dsc_wait <= 4'd0;
+						dsc_wait <= 8'd0;
+						lat_word <= fifo_dout;
 						fifo_rd  <= 1'b1;
-						state    <= S_LOAD_WAIT;
+						state    <= S_LOAD_LO;
 					end else if (dsc_complete_ram) begin
 						if (&dsc_wait) state <= S_RUN;
-						else dsc_wait <= dsc_wait + 4'd1;
+						else dsc_wait <= dsc_wait + 8'd1;
 					end
-				end
-
-				S_LOAD_WAIT: begin
-					state <= S_LOAD_LAT;
-				end
-
-				S_LOAD_LAT: begin
-					lat_word <= fifo_dout;
-					state    <= S_LOAD_LO;
 				end
 
 				S_LOAD_LO: begin
@@ -263,7 +254,14 @@ module pk_io #(
 
 				S_LOAD_HI_INC: begin
 					ioctl_addr <= ioctl_addr + 27'd2;
-					state      <= S_LOAD_RD;
+					if (!fifo_empty) begin
+						dsc_wait <= 8'd0;
+						lat_word <= fifo_dout;
+						fifo_rd  <= 1'b1;
+						state    <= S_LOAD_LO;
+					end else begin
+						state    <= S_LOAD_RD;
+					end
 				end
 
 				S_RUN: begin

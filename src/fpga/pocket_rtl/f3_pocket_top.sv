@@ -595,20 +595,19 @@ module f3_pocket_top (
 	// -------------------------------------------------------------------------
 	reg         sram_bist_done   = 1'b0;
 	reg         sram_bist_active = 1'b0;
-	reg  [1:0]  sram_bist_phase  = 2'd0;
+	reg  [2:0]  sram_bist_phase  = 3'd0;
 	reg  [15:0] sram_bist_addr   = 16'd0;
 	reg  [15:0] sram_err_cnt     = 16'd0;
 
-	reg  [2:0]  rom_bist_st      = 3'd0;
+	reg  [1:0]  rom_bist_st      = 2'd0;
 	reg         rom_bist_req     = 1'b0;
-	reg  [1:0]  rom_bist_addr    = 2'd0;
+	reg  [18:0] rom_bist_addr    = 19'd0;
+	reg  [31:0] rom_bist_sum     = 32'd0;
 	reg  [15:0] dbg_rom_w0       = 16'd0;
 	reg  [15:0] dbg_rom_w1       = 16'd0;
-	reg  [15:0] dbg_rom_w2       = 16'd0;
-	reg  [15:0] dbg_rom_w3       = 16'd0;
-	wire        rom_bist_active  = (rom_bist_st >= 3'd1 && rom_bist_st <= 3'd4);
+	wire        rom_bist_active  = (rom_bist_st == 2'd1);
 
-	wire cpu_reset = reset | ioctl_download_sys | !boot_done_sys | !sram_bist_done | !sdram_bist_done_sys | (rom_bist_st != 3'd5);
+	wire cpu_reset = reset | ioctl_download_sys | !boot_done_sys | !sram_bist_done | !sdram_bist_done_sys | (rom_bist_st != 2'd2);
 	wire [21:1] cpu_prog_addr;
 	wire        cpu_prog_req;
 	wire [15:0] prog_data;
@@ -616,56 +615,37 @@ module f3_pocket_top (
 
 	always @(posedge clk_sys or posedge reset) begin
 		if (reset) begin
-			rom_bist_st   <= 3'd0;
+			rom_bist_st   <= 2'd0;
 			rom_bist_req  <= 1'b0;
-			rom_bist_addr <= 2'd0;
+			rom_bist_addr <= 19'd0;
+			rom_bist_sum  <= 32'd0;
 			dbg_rom_w0    <= 16'd0;
 			dbg_rom_w1    <= 16'd0;
-			dbg_rom_w2    <= 16'd0;
-			dbg_rom_w3    <= 16'd0;
 		end else if (ioctl_download_sys || !boot_done_sys || !sdram_bist_done_sys) begin
-			rom_bist_st   <= 3'd0;
+			rom_bist_st   <= 2'd0;
 			rom_bist_req  <= 1'b0;
-			rom_bist_addr <= 2'd0;
+			rom_bist_addr <= 19'd0;
+			rom_bist_sum  <= 32'd0;
 		end else begin
 			case (rom_bist_st)
-				3'd0: begin
-					rom_bist_addr <= 2'd0;
+				2'd0: begin
+					rom_bist_addr <= 19'd0;
+					rom_bist_sum  <= 32'd0;
 					rom_bist_req  <= 1'b1;
-					rom_bist_st   <= 3'd1;
+					rom_bist_st   <= 2'd1;
 				end
-				3'd1: begin
+				2'd1: begin
 					rom_bist_req <= 1'b0;
 					if (prog_valid) begin
-						dbg_rom_w0    <= prog_data;
-						rom_bist_addr <= 2'd1;
-						rom_bist_req  <= 1'b1;
-						rom_bist_st   <= 3'd2;
-					end
-				end
-				3'd2: begin
-					rom_bist_req <= 1'b0;
-					if (prog_valid) begin
-						dbg_rom_w1    <= prog_data;
-						rom_bist_addr <= 2'd2;
-						rom_bist_req  <= 1'b1;
-						rom_bist_st   <= 3'd3;
-					end
-				end
-				3'd3: begin
-					rom_bist_req <= 1'b0;
-					if (prog_valid) begin
-						dbg_rom_w2    <= prog_data;
-						rom_bist_addr <= 2'd3;
-						rom_bist_req  <= 1'b1;
-						rom_bist_st   <= 3'd4;
-					end
-				end
-				3'd4: begin
-					rom_bist_req <= 1'b0;
-					if (prog_valid) begin
-						dbg_rom_w3  <= prog_data;
-						rom_bist_st <= 3'd5;
+						if (rom_bist_addr == 19'd0) dbg_rom_w0 <= prog_data;
+						if (rom_bist_addr == 19'd1) dbg_rom_w1 <= prog_data;
+						rom_bist_sum <= {rom_bist_sum[30:0], rom_bist_sum[31]} + {16'd0, prog_data};
+						if (rom_bist_addr == 19'h7FFFF) begin
+							rom_bist_st <= 2'd2;
+						end else begin
+							rom_bist_addr <= rom_bist_addr + 19'd1;
+							rom_bist_req  <= 1'b1;
+						end
 					end
 				end
 				default: rom_bist_req <= 1'b0;
@@ -676,7 +656,7 @@ module f3_pocket_top (
 	rf_prog_bus u_prog_bus (
 		.clk_cpu   ( clk_sys ),
 		.reset     ( bus_reset ),
-		.addr      ( rom_bist_active ? {19'd0, rom_bist_addr} : cpu_prog_addr ),
+		.addr      ( rom_bist_active ? {2'd0, rom_bist_addr} : cpu_prog_addr ),
 		.req       ( rom_bist_active ? rom_bist_req : cpu_prog_req ),
 		.data      ( prog_data ),
 		.valid     ( prog_valid ),
@@ -696,6 +676,8 @@ module f3_pocket_top (
 
 	wire [31:0] dbg_wr_count, dbg_wr_hash, dbg_last_pc, dbg_cpu_addr;
 	wire [3:0]  dbg_wait_state;
+	wire [23:0] dbg_snd_pc;
+	wire        dbg_snd_running;
 	wire [15:0] dbg_frame_cnt, dbg_irq2_cnt, dbg_irq3_cnt;
 	wire [15:0] dbg_pf_wr_cnt, dbg_spr_wr_cnt, dbg_pal_wr_cnt, dbg_line_wr_cnt;
 	wire        dbg_trap_oor;
@@ -773,7 +755,7 @@ module f3_pocket_top (
 			sram_owner       <= 1'b0;
 			sram_bist_done   <= 1'b0;
 			sram_bist_active <= 1'b0;
-			sram_bist_phase  <= 2'd0;
+			sram_bist_phase  <= 3'd0;
 			sram_bist_addr   <= 16'd0;
 			sram_err_cnt     <= 16'd0;
 		end else begin
@@ -784,7 +766,7 @@ module f3_pocket_top (
 			if (ioctl_download_sys || !boot_done_sys) begin
 				sram_bist_done   <= 1'b0;
 				sram_bist_active <= 1'b0;
-				sram_bist_phase  <= 2'd0;
+				sram_bist_phase  <= 3'd0;
 				sram_bist_addr   <= 16'd0;
 				sram_err_cnt     <= 16'd0;
 			end
@@ -797,11 +779,16 @@ module f3_pocket_top (
 					if (!sram_bist_done && boot_done_sys && !ioctl_download_sys) begin
 						sram_bist_active <= 1'b1;
 						sram_a           <= {1'b0, sram_bist_addr};
-						sram_ub_n        <= 1'b0;
-						sram_lb_n        <= 1'b0;
-						sram_wr_lat      <= (sram_bist_phase != 2'd1);
-						if (sram_bist_phase != 2'd1) begin
-							sram_dq_out <= (sram_bist_phase == 2'd0) ? (sram_bist_addr ^ 16'hA55A) : 16'd0;
+						sram_ub_n        <= (sram_bist_phase == 3'd3);
+						sram_lb_n        <= (sram_bist_phase == 3'd2);
+						sram_wr_lat      <= (sram_bist_phase != 3'd1 && sram_bist_phase != 3'd4);
+						if (sram_bist_phase != 3'd1 && sram_bist_phase != 3'd4) begin
+							case (sram_bist_phase)
+								3'd0:    sram_dq_out <= sram_bist_addr ^ 16'hA55A;
+								3'd2:    sram_dq_out <= 16'h3CFF;
+								3'd3:    sram_dq_out <= 16'hFFA5;
+								default: sram_dq_out <= 16'd0;
+							endcase
 							sram_dq_oe  <= 1'b1;
 							sram_we_n   <= 1'b0;
 							sram_oe_n   <= 1'b1;
@@ -857,16 +844,17 @@ module f3_pocket_top (
 
 				SR_DONE: begin
 					if (sram_bist_active) begin
-						if (sram_bist_phase == 2'd1 && (sram_dq !== (sram_bist_addr ^ 16'hA55A))) begin
+						if ((sram_bist_phase == 3'd1 && (sram_dq !== (sram_bist_addr ^ 16'hA55A))) ||
+						    (sram_bist_phase == 3'd4 && (sram_dq !== 16'h3CA5))) begin
 							if (sram_err_cnt != 16'hFFFF)
 								sram_err_cnt <= sram_err_cnt + 16'd1;
 						end
 						sram_bist_active <= 1'b0;
 						if (sram_bist_addr == 16'hFFFF) begin
-							if (sram_bist_phase == 2'd2)
+							if (sram_bist_phase == 3'd5)
 								sram_bist_done <= 1'b1;
 							else begin
-								sram_bist_phase <= sram_bist_phase + 2'd1;
+								sram_bist_phase <= sram_bist_phase + 3'd1;
 								sram_bist_addr  <= 16'd0;
 							end
 						end else begin
@@ -881,7 +869,6 @@ module f3_pocket_top (
 					end
 					sram_oe_n   <= 1'b1;
 					sram_we_n   <= 1'b1;
-					sram_dq_oe  <= 1'b0;
 					sram_st     <= SR_IDLE;
 				end
 
@@ -893,6 +880,7 @@ module f3_pocket_top (
 	rf_main #(.EXT_RAM(1'b1), .RING_EN(1'b0)) u_main (
 		.clk        ( clk_sys ),
 		.reset      ( cpu_reset ),
+		.clk_ram    ( clk_ram ),
 		.prog_addr  ( cpu_prog_addr ),
 		.prog_req   ( cpu_prog_req ),
 		.prog_data  ( prog_data ),
@@ -904,7 +892,7 @@ module f3_pocket_top (
 		.six_button ( 1'b1 ),
 		.pause      ( 1'b0 ),
 		.test_sw    ( service_mode ),
-		.nv_wr      ( ), .nv_addr ( ), .nv_data ( ),
+		.nv_wr      ( 1'b0 ), .nv_addr ( 6'd0 ), .nv_data ( 16'd0 ),
 		.hs_pause   ( 1'b0 ), .hs_addr ( 16'd0 ), .hs_wdata ( 16'd0 ),
 		.hs_be      ( 2'b00 ), .hs_we ( 1'b0 ), .hs_q ( ),
 		.nv_sv_addr ( 6'd0 ), .nv_sv_data ( ), .nv_wrote ( ),
@@ -1039,9 +1027,13 @@ module f3_pocket_top (
 		.reset      ( reset ),
 		.dl_active  ( ioctl_download_sys ), .dl_seen ( boot_done_sys ), .dl_bytes ( dbg_dl_bytes ), .dl_sum ( {dbg_rom_w0, dbg_rom_w1} ), .dl_index ( ioctl_index ),
 		.trap_oor   ( dbg_trap_oor ), .wr_count ( dbg_wr_count ), .wr_hash ( dbg_wr_hash ), .last_pc ( dbg_last_pc ),
-		.bist_sum   ( {sdram_err_cnt, sram_err_cnt} ), .bist_done ( sdram_bist_done_sys ),
+		.bist_sum   ( (sdram_err_cnt != 16'd0 || sram_err_cnt != 16'd0) ? {sdram_err_cnt, sram_err_cnt} : rom_bist_sum ),
+		.bist_done  ( sdram_bist_done_sys ),
 		.frame_cnt  ( dbg_frame_cnt ), .irq2_cnt ( dbg_irq2_cnt ), .irq3_cnt ( dbg_irq3_cnt ),
-		.pf_wr_cnt  ( dbg_rom_w2 ), .spr_wr_cnt ( dbg_rom_w3 ), .pal_wr_cnt ( dbg_pal_wr_cnt ), .line_wr_cnt ( sdram_first_bad ),
+		.pf_wr_cnt  ( {snd_reset, dbg_snd_running, 2'd0, dbg_wait_state, dbg_snd_pc[23:16]} ),
+		.spr_wr_cnt ( dbg_snd_pc[15:0] ),
+		.pal_wr_cnt ( dbg_pal_wr_cnt ),
+		.line_wr_cnt( dbg_cpu_addr[15:0] ),
 		.v_pal_addr ( ), .v_pal_q ( 16'd0 ),
 		.vis_mode   ( cfg_vis ),
 		.rate_60    ( 1'b0 ),
@@ -1114,9 +1106,9 @@ module f3_pocket_top (
 		.es_rd_valid( es_rd_valid ),
 		.ring_we    ( ),
 		.ring_data  ( ),
-		.last_pc    ( ),
+		.last_pc    ( dbg_snd_pc ),
 		.es_wr_cnt  ( ),
-		.running    ( ),
+		.running    ( dbg_snd_running ),
 		.ext_ram_addr ( snd_ext_ram_addr ),
 		.ext_ram_wdata( snd_ext_ram_wdata ),
 		.ext_ram_be   ( snd_ext_ram_be ),
@@ -1135,15 +1127,67 @@ module f3_pocket_top (
 
 	logic es_tick;
 	logic [31:0] es_acc;
+	logic [31:0] es_rate;
+	always_comb begin
+		case (es_active)
+			5'd0:  es_rate = 32'd952380;
+			5'd1:  es_rate = 32'd476190;
+			5'd2:  es_rate = 32'd317460;
+			5'd3:  es_rate = 32'd238095;
+			5'd4:  es_rate = 32'd190476;
+			5'd5:  es_rate = 32'd158730;
+			5'd6:  es_rate = 32'd136054;
+			5'd7:  es_rate = 32'd119047;
+			5'd8:  es_rate = 32'd105820;
+			5'd9:  es_rate = 32'd95238;
+			5'd10: es_rate = 32'd86580;
+			5'd11: es_rate = 32'd79365;
+			5'd12: es_rate = 32'd73260;
+			5'd13: es_rate = 32'd68027;
+			5'd14: es_rate = 32'd63492;
+			5'd15: es_rate = 32'd59523;
+			5'd16: es_rate = 32'd56022;
+			5'd17: es_rate = 32'd52910;
+			5'd18: es_rate = 32'd50125;
+			5'd19: es_rate = 32'd47619;
+			5'd20: es_rate = 32'd45351;
+			5'd21: es_rate = 32'd43290;
+			5'd22: es_rate = 32'd41407;
+			5'd23: es_rate = 32'd39682;
+			5'd24: es_rate = 32'd38095;
+			5'd25: es_rate = 32'd36630;
+			5'd26: es_rate = 32'd35273;
+			5'd27: es_rate = 32'd34013;
+			5'd28: es_rate = 32'd32840;
+			5'd29: es_rate = 32'd31746;
+			5'd30: es_rate = 32'd30721;
+			5'd31: es_rate = 32'd29761;
+			default: es_rate = 32'd29761;
+		endcase
+	end
+
 	always_ff @(posedge clk_sys) begin
 		es_tick <= 1'b0;
 		if (cpu_reset) es_acc <= 32'd0;
-		else if (es_acc + 32'd95238 >= 32'd53372000) begin
-			es_acc  <= es_acc + 32'd95238 - 32'd53372000;
+		else if (es_acc + es_rate >= 32'd53372000) begin
+			es_acc  <= es_acc + es_rate - 32'd53372000;
 			es_tick <= 1'b1;
 		end else begin
-			es_acc  <= es_acc + 32'd95238;
+			es_acc  <= es_acc + es_rate;
 		end
+	end
+
+	logic [2:0] cfg_bankmask;
+	always_comb begin
+		case (cfg_game)
+			6'd8:    cfg_bankmask = 3'd1; // Arkanoid Returns  (4 MB)
+			6'd9:    cfg_bankmask = 3'd7; // Puzzle Bobble 3  (16 MB)
+			6'd10:   cfg_bankmask = 3'd7; // Puzzle Bobble 4  (16 MB)
+			6'd13:   cfg_bankmask = 3'd1; // Cleopatra Fortune (4 MB)
+			6'd14:   cfg_bankmask = 3'd1; // Twin Qix          (4 MB)
+			6'd36:   cfg_bankmask = 3'd7; // Kirameki Star Road
+			default: cfg_bankmask = 3'd3; // 8 MB region
+		endcase
 	end
 
 	rf_es5505 u_es5505 (
@@ -1156,7 +1200,7 @@ module f3_pocket_top (
 		.bk_we      ( bk_we ),
 		.bk_voice   ( bk_voice ),
 		.bk_data    ( bk_data ),
-		.bank_mask  ( 3'd7 ),
+		.bank_mask  ( cfg_bankmask ),
 		.sm_req     ( sm_req ),
 		.sm_addr    ( sm_addr ),
 		.sm_line    ( sm_line ),
@@ -1214,19 +1258,23 @@ module f3_pocket_top (
 		.out_r   ( snd_r )
 	);
 
-	// Audio boost multiplier
-	reg signed [15:0] boost_l, boost_r;
-	always_comb begin
-		case (audio_boost)
-			2'd0: begin boost_l = snd_l <<< 3; boost_r = snd_r <<< 3; end // 8x
-			2'd1: begin boost_l = snd_l;       boost_r = snd_r;       end // 1x
-			2'd2: begin boost_l = snd_l <<< 2; boost_r = snd_r <<< 2; end // 4x
-			2'd3: begin boost_l = snd_l <<< 4; boost_r = snd_r <<< 4; end // 16x
-		endcase
-	end
+	// Saturating audio boost multiplier (matches Rayforce.sv)
+	wire [2:0] aud_sh = (audio_boost == 2'd0) ? 3'd3 : // 8x
+	                    (audio_boost == 2'd1) ? 3'd0 : // 1x
+	                    (audio_boost == 2'd2) ? 3'd2 : // 4x
+	                                            3'd4;  // 16x
+	wire signed [23:0] aud_wl = 24'($signed(snd_l)) <<< aud_sh;
+	wire signed [23:0] aud_wr = 24'($signed(snd_r)) <<< aud_sh;
+	wire signed [15:0] boost_l = (aud_wl >  24'sd32767) ?  16'sd32767 :
+	                             (aud_wl < -24'sd32768) ? -16'sd32768 : aud_wl[15:0];
+	wire signed [15:0] boost_r = (aud_wr >  24'sd32767) ?  16'sd32767 :
+	                             (aud_wr < -24'sd32768) ? -16'sd32768 : aud_wr[15:0];
 
-	// Pocket I2S Audio DAC (48 kHz)
-	sound_i2s u_i2s (
+	// Pocket I2S Audio DAC (48 kHz, 16-bit signed)
+	sound_i2s #(
+		.CHANNEL_WIDTH  ( 16 ),
+		.SIGNED_INPUT   ( 1 )
+	) u_i2s (
 		.clk_74a        ( clk_74a ),
 		.clk_audio      ( clk_sys ),
 		.audio_l        ( boost_l ),
