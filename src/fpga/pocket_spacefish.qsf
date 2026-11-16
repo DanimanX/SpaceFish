@@ -802,3 +802,10 @@ set_global_assignment -name ALLOW_POWER_UP_DONT_CARE ON
 # asynchronous to each other removes the enormous false analysis done per build
 # (the two big '?' Fmax entries at 79 MHz). The crossings themselves are handled
 # in RTL (dcfifo in pk_io, two-flop synchronisers in ki_pocket_top).
+
+# SDRAM I/O registers in the IOE (same as MiSTer sys.tcl): fixed capture and
+# launch timing for the 97 MHz CL3 controller instead of compile-dependent
+# fabric routing to the pins.
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to dram_*
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to dram_dq[*]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to dram_dq[*]

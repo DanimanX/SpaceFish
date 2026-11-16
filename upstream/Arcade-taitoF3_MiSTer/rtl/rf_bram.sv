@@ -14,9 +14,8 @@
 //============================================================================
 
 module rf_bram #(
-    parameter WIDTH    = 8,
-    parameter AW       = 10,
-    parameter RAMSTYLE = "AUTO"
+    parameter WIDTH = 8,
+    parameter AW    = 10
 ) (
     input  wire             clk,
     input  wire [AW-1:0]    waddr,
@@ -53,7 +52,6 @@ module rf_bram #(
         // is what the one-cycle read contract already assumes.
         .read_during_write_mode_mixed_ports("OLD_DATA"),
         .lpm_type("altsyncram"),
-        .ram_block_type(RAMSTYLE),
         .intended_device_family("Cyclone V")
     ) r (
         .clock0(clk),

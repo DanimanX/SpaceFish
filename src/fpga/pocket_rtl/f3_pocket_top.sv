@@ -116,7 +116,6 @@ module f3_pocket_top (
 	wire         core_reset_btn;
 	wire         service_mode;
 	wire [1:0]   audio_boost;
-	wire [2:0]   cpu_speed;
 
 	wire         ioctl_download;
 	wire         ioctl_wr;
@@ -145,7 +144,6 @@ module f3_pocket_top (
 		.core_reset_btn ( core_reset_btn ),
 		.service_mode   ( service_mode ),
 		.audio_boost    ( audio_boost ),
-		.cpu_speed      ( cpu_speed ),
 
 		.ioctl_download ( ioctl_download ),
 		.ioctl_wr       ( ioctl_wr ),
@@ -167,6 +165,15 @@ module f3_pocket_top (
 	wire boot_done_sys      = bd_sync[1];
 
 	wire reset = !pll_locked | core_reset_btn;
+
+	// Diagnostics for the self-test overlay: number of Reset Core actions seen
+	// and the ROM FIFO overflow flag (shown in row 2 in place of ioctl_index).
+	reg [3:0] dbg_rst_cnt = 4'd0;
+	reg       core_reset_btn_d = 1'b0;
+	always @(posedge clk_sys) begin
+		core_reset_btn_d <= core_reset_btn;
+		if (core_reset_btn && !core_reset_btn_d) dbg_rst_cnt <= dbg_rst_cnt + 4'd1;
+	end
 	wire bus_reset = reset;
 
 	// -------------------------------------------------------------------------
@@ -231,7 +238,7 @@ module f3_pocket_top (
 		end else if (!sdram_bist_done) begin
 			case (sdram_bist_st)
 				3'd0: begin // Issue write
-					bist_ch8_addr <= 26'h1900000 + {18'd0, sdram_bist_idx};
+					bist_ch8_addr <= 26'h0B00000 + {18'd0, sdram_bist_idx};
 					bist_ch8_din  <= {8'd0, sdram_bist_idx} ^ 16'h5A3C;
 					bist_ch8_rnw  <= 1'b0;
 					bist_ch8_req  <= 1'b1;
@@ -250,7 +257,7 @@ module f3_pocket_top (
 					end
 				end
 				3'd2: begin // Issue 4-word burst read
-					bist_ch8_addr <= 26'h1900000 + {18'd0, sdram_bist_idx[7:2], 2'b00};
+					bist_ch8_addr <= 26'h0B00000 + {18'd0, sdram_bist_idx[7:2], 2'b00};
 					bist_ch8_rnw  <= 1'b1;
 					bist_ch8_req  <= 1'b1;
 					sdram_bist_st <= 3'd3;
@@ -343,12 +350,12 @@ module f3_pocket_top (
 
 		.ch1_addr   ( ch1_addr ),
 		.ch1_dout   ( ch1_dout ),
-		.ch1_req    ( ch1_req ),
+		.ch1_req    ( ch1_req & ~ioctl_download ),
 		.ch1_ready  ( ch1_ready ),
 
 		.ch2_addr   ( ch2_addr ),
 		.ch2_dout   ( ch2_dout ),
-		.ch2_req    ( ch2_req ),
+		.ch2_req    ( ch2_req & ~ioctl_download ),
 		.ch2_ready  ( ch2_ready ),
 
 		.ch3_addr   ( ioctl_download ? ld_addr : ch3_addr_pb ),
@@ -361,22 +368,22 @@ module f3_pocket_top (
 
 		.ch4_addr   ( ch4_addr ),
 		.ch4_dout   ( ch4_dout ),
-		.ch4_req    ( ch4_req ),
+		.ch4_req    ( ch4_req & ~ioctl_download ),
 		.ch4_ready  ( ch4_ready ),
 
 		.ch5_addr   ( ch5_addr ),
 		.ch5_dout   ( ch5_dout ),
-		.ch5_req    ( ch5_req ),
+		.ch5_req    ( ch5_req & ~ioctl_download ),
 		.ch5_ready  ( ch5_ready ),
 
 		.ch6_addr   ( ch6_addr ),
 		.ch6_dout   ( ch6_dout ),
-		.ch6_req    ( ch6_req ),
+		.ch6_req    ( ch6_req & ~ioctl_download ),
 		.ch6_ready  ( ch6_ready ),
 
 		.ch7_addr   ( ch7_addr ),
 		.ch7_dout   ( ch7_dout ),
-		.ch7_req    ( ch7_req ),
+		.ch7_req    ( ch7_req & ~ioctl_download ),
 		.ch7_ready  ( ch7_ready ),
 
 		.ch8_addr   ( ch8_addr ),
@@ -384,7 +391,7 @@ module f3_pocket_top (
 		.ch8_be     ( ch8_be ),
 		.ch8_rnw    ( ch8_rnw ),
 		.ch8_dout   ( ch8_dout ),
-		.ch8_req    ( ch8_req ),
+		.ch8_req    ( ch8_req & ~ioctl_download ),
 		.ch8_ready  ( ch8_ready )
 	);
 
@@ -605,19 +612,20 @@ module f3_pocket_top (
 	// -------------------------------------------------------------------------
 	reg         sram_bist_done   = 1'b0;
 	reg         sram_bist_active = 1'b0;
-	reg  [2:0]  sram_bist_phase  = 3'd0;
+	reg  [1:0]  sram_bist_phase  = 2'd0;
 	reg  [15:0] sram_bist_addr   = 16'd0;
 	reg  [15:0] sram_err_cnt     = 16'd0;
 
-	reg  [1:0]  rom_bist_st      = 2'd0;
+	reg  [2:0]  rom_bist_st      = 3'd0;
 	reg         rom_bist_req     = 1'b0;
-	reg  [18:0] rom_bist_addr    = 19'd0;
-	reg  [31:0] rom_bist_sum     = 32'd0;
+	reg  [1:0]  rom_bist_addr    = 2'd0;
 	reg  [15:0] dbg_rom_w0       = 16'd0;
 	reg  [15:0] dbg_rom_w1       = 16'd0;
-	wire        rom_bist_active  = (rom_bist_st == 2'd1);
+	reg  [15:0] dbg_rom_w2       = 16'd0;
+	reg  [15:0] dbg_rom_w3       = 16'd0;
+	wire        rom_bist_active  = (rom_bist_st >= 3'd1 && rom_bist_st <= 3'd4);
 
-	wire cpu_reset = reset | ioctl_download_sys | !boot_done_sys | !sram_bist_done | !sdram_bist_done_sys | (rom_bist_st != 2'd2);
+	wire cpu_reset = reset | ioctl_download_sys | !boot_done_sys | !sram_bist_done | !sdram_bist_done_sys | (rom_bist_st != 3'd5);
 	wire [21:1] cpu_prog_addr;
 	wire        cpu_prog_req;
 	wire [15:0] prog_data;
@@ -625,37 +633,56 @@ module f3_pocket_top (
 
 	always @(posedge clk_sys or posedge reset) begin
 		if (reset) begin
-			rom_bist_st   <= 2'd0;
+			rom_bist_st   <= 3'd0;
 			rom_bist_req  <= 1'b0;
-			rom_bist_addr <= 19'd0;
-			rom_bist_sum  <= 32'd0;
+			rom_bist_addr <= 2'd0;
 			dbg_rom_w0    <= 16'd0;
 			dbg_rom_w1    <= 16'd0;
+			dbg_rom_w2    <= 16'd0;
+			dbg_rom_w3    <= 16'd0;
 		end else if (ioctl_download_sys || !boot_done_sys || !sdram_bist_done_sys) begin
-			rom_bist_st   <= 2'd0;
+			rom_bist_st   <= 3'd0;
 			rom_bist_req  <= 1'b0;
-			rom_bist_addr <= 19'd0;
-			rom_bist_sum  <= 32'd0;
+			rom_bist_addr <= 2'd0;
 		end else begin
 			case (rom_bist_st)
-				2'd0: begin
-					rom_bist_addr <= 19'd0;
-					rom_bist_sum  <= 32'd0;
+				3'd0: begin
+					rom_bist_addr <= 2'd0;
 					rom_bist_req  <= 1'b1;
-					rom_bist_st   <= 2'd1;
+					rom_bist_st   <= 3'd1;
 				end
-				2'd1: begin
+				3'd1: begin
 					rom_bist_req <= 1'b0;
 					if (prog_valid) begin
-						if (rom_bist_addr == 19'd0) dbg_rom_w0 <= prog_data;
-						if (rom_bist_addr == 19'd1) dbg_rom_w1 <= prog_data;
-						rom_bist_sum <= {rom_bist_sum[30:0], rom_bist_sum[31]} + {16'd0, prog_data};
-						if (rom_bist_addr == 19'h7FFFF) begin
-							rom_bist_st <= 2'd2;
-						end else begin
-							rom_bist_addr <= rom_bist_addr + 19'd1;
-							rom_bist_req  <= 1'b1;
-						end
+						dbg_rom_w0    <= prog_data;
+						rom_bist_addr <= 2'd1;
+						rom_bist_req  <= 1'b1;
+						rom_bist_st   <= 3'd2;
+					end
+				end
+				3'd2: begin
+					rom_bist_req <= 1'b0;
+					if (prog_valid) begin
+						dbg_rom_w1    <= prog_data;
+						rom_bist_addr <= 2'd2;
+						rom_bist_req  <= 1'b1;
+						rom_bist_st   <= 3'd3;
+					end
+				end
+				3'd3: begin
+					rom_bist_req <= 1'b0;
+					if (prog_valid) begin
+						dbg_rom_w2    <= prog_data;
+						rom_bist_addr <= 2'd3;
+						rom_bist_req  <= 1'b1;
+						rom_bist_st   <= 3'd4;
+					end
+				end
+				3'd4: begin
+					rom_bist_req <= 1'b0;
+					if (prog_valid) begin
+						dbg_rom_w3  <= prog_data;
+						rom_bist_st <= 3'd5;
 					end
 				end
 				default: rom_bist_req <= 1'b0;
@@ -666,7 +693,7 @@ module f3_pocket_top (
 	rf_prog_bus u_prog_bus (
 		.clk_cpu   ( clk_sys ),
 		.reset     ( bus_reset ),
-		.addr      ( rom_bist_active ? {2'd0, rom_bist_addr} : cpu_prog_addr ),
+		.addr      ( rom_bist_active ? {19'd0, rom_bist_addr} : cpu_prog_addr ),
 		.req       ( rom_bist_active ? rom_bist_req : cpu_prog_req ),
 		.data      ( prog_data ),
 		.valid     ( prog_valid ),
@@ -686,8 +713,6 @@ module f3_pocket_top (
 
 	wire [31:0] dbg_wr_count, dbg_wr_hash, dbg_last_pc, dbg_cpu_addr;
 	wire [3:0]  dbg_wait_state;
-	wire [23:0] dbg_snd_pc;
-	wire        dbg_snd_running;
 	wire [15:0] dbg_frame_cnt, dbg_irq2_cnt, dbg_irq3_cnt;
 	wire [15:0] dbg_pf_wr_cnt, dbg_spr_wr_cnt, dbg_pal_wr_cnt, dbg_line_wr_cnt;
 	wire        dbg_trap_oor;
@@ -744,10 +769,9 @@ module f3_pocket_top (
 	reg         sram_dq_oe  = 1'b0;
 	assign sram_dq = sram_dq_oe ? sram_dq_out : 16'hzzzz;
 
-	localparam [0:0] SR_IDLE = 1'd0, SR_WAIT = 1'd1;
-	reg       sram_st = SR_IDLE;
+	localparam [1:0] SR_IDLE = 2'd0, SR_WAIT = 2'd1, SR_DONE = 2'd2;
+	reg [1:0] sram_st = SR_IDLE;
 	reg       sram_wr_lat = 1'b0;
-	reg       sram_bist_hi = 1'b0; // 0: main 128KB (a[16]=0), 1: sound 64KB (a[16]=1)
 
 	always @(posedge clk_sys or posedge reset) begin
 		if (reset) begin
@@ -761,15 +785,14 @@ module f3_pocket_top (
 			sram_dq_out     <= 16'd0;
 			ext_ram_ack     <= 1'b0;
 			snd_ext_ram_ack <= 1'b0;
-			main_ram_pend   <= 1'b0;
-			snd_ram_pend    <= 1'b0;
-			sram_owner      <= 1'b0;
-			sram_bist_done  <= 1'b0;
-			sram_bist_active<= 1'b0;
-			sram_bist_phase <= 3'd0;
-			sram_bist_addr  <= 16'd0;
-			sram_bist_hi    <= 1'b0;
-			sram_err_cnt    <= 16'd0;
+			main_ram_pend    <= 1'b0;
+			snd_ram_pend     <= 1'b0;
+			sram_owner       <= 1'b0;
+			sram_bist_done   <= 1'b0;
+			sram_bist_active <= 1'b0;
+			sram_bist_phase  <= 2'd0;
+			sram_bist_addr   <= 16'd0;
+			sram_err_cnt     <= 16'd0;
 		end else begin
 			ext_ram_ack     <= 1'b0;
 			snd_ext_ram_ack <= 1'b0;
@@ -778,9 +801,8 @@ module f3_pocket_top (
 			if (ioctl_download_sys || !boot_done_sys) begin
 				sram_bist_done   <= 1'b0;
 				sram_bist_active <= 1'b0;
-				sram_bist_phase  <= 3'd0;
+				sram_bist_phase  <= 2'd0;
 				sram_bist_addr   <= 16'd0;
-				sram_bist_hi     <= 1'b0;
 				sram_err_cnt     <= 16'd0;
 			end
 
@@ -791,17 +813,12 @@ module f3_pocket_top (
 					sram_dq_oe <= 1'b0;
 					if (!sram_bist_done && boot_done_sys && !ioctl_download_sys) begin
 						sram_bist_active <= 1'b1;
-						sram_a           <= {sram_bist_hi, sram_bist_addr};
-						sram_ub_n        <= (sram_bist_phase == 3'd3);
-						sram_lb_n        <= (sram_bist_phase == 3'd2);
-						sram_wr_lat      <= (sram_bist_phase != 3'd1 && sram_bist_phase != 3'd4);
-						if (sram_bist_phase != 3'd1 && sram_bist_phase != 3'd4) begin
-							case (sram_bist_phase)
-								3'd0:    sram_dq_out <= sram_bist_addr ^ 16'hA55A;
-								3'd2:    sram_dq_out <= 16'h3CFF;
-								3'd3:    sram_dq_out <= 16'hFFA5;
-								default: sram_dq_out <= 16'd0;
-							endcase
+						sram_a           <= {1'b0, sram_bist_addr};
+						sram_ub_n        <= 1'b0;
+						sram_lb_n        <= 1'b0;
+						sram_wr_lat      <= (sram_bist_phase != 2'd1);
+						if (sram_bist_phase != 2'd1) begin
+							sram_dq_out <= (sram_bist_phase == 2'd0) ? (sram_bist_addr ^ 16'hA55A) : 16'd0;
 							sram_dq_oe  <= 1'b1;
 							sram_we_n   <= 1'b0;
 							sram_oe_n   <= 1'b1;
@@ -851,26 +868,22 @@ module f3_pocket_top (
 				end
 
 				SR_WAIT: begin
-					// 1 full clk_sys (18.74 ns) settle time (> 10 ns SRAM tAA/tWP): capture & ack directly
+					// 1 full clk_sys (18.7 ns) settle time (> 10 ns SRAM access/write pulse)
+					sram_st <= SR_DONE;
+				end
+
+				SR_DONE: begin
 					if (sram_bist_active) begin
-						if ((sram_bist_phase == 3'd1 && (sram_dq !== (sram_bist_addr ^ 16'hA55A))) ||
-						    (sram_bist_phase == 3'd4 && (sram_dq !== 16'h3CA5))) begin
+						if (sram_bist_phase == 2'd1 && (sram_dq !== (sram_bist_addr ^ 16'hA55A))) begin
 							if (sram_err_cnt != 16'hFFFF)
 								sram_err_cnt <= sram_err_cnt + 16'd1;
 						end
 						sram_bist_active <= 1'b0;
-						if ((!sram_bist_hi && sram_bist_addr == 16'hFFFF) ||
-						    ( sram_bist_hi && sram_bist_addr == 16'h7FFF)) begin
-							if (sram_bist_phase == 3'd5) begin
-								if (sram_bist_hi) begin
-									sram_bist_done <= 1'b1;
-								end else begin
-									sram_bist_hi    <= 1'b1;
-									sram_bist_phase <= 3'd0;
-									sram_bist_addr  <= 16'd0;
-								end
-							end else begin
-								sram_bist_phase <= sram_bist_phase + 3'd1;
+						if (sram_bist_addr == 16'hFFFF) begin
+							if (sram_bist_phase == 2'd2)
+								sram_bist_done <= 1'b1;
+							else begin
+								sram_bist_phase <= sram_bist_phase + 2'd1;
 								sram_bist_addr  <= 16'd0;
 							end
 						end else begin
@@ -888,6 +901,8 @@ module f3_pocket_top (
 					sram_dq_oe  <= 1'b0;
 					sram_st     <= SR_IDLE;
 				end
+
+				default: sram_st <= SR_IDLE;
 			endcase
 		end
 	end
@@ -907,7 +922,7 @@ module f3_pocket_top (
 		.six_button ( 1'b1 ),
 		.pause      ( 1'b0 ),
 		.test_sw    ( service_mode ),
-		.nv_wr      ( 1'b0 ), .nv_addr ( 6'd0 ), .nv_data ( 16'd0 ),
+		.nv_wr      ( ), .nv_addr ( ), .nv_data ( ),
 		.hs_pause   ( 1'b0 ), .hs_addr ( 16'd0 ), .hs_wdata ( 16'd0 ),
 		.hs_be      ( 2'b00 ), .hs_we ( 1'b0 ), .hs_q ( ),
 		.nv_sv_addr ( 6'd0 ), .nv_sv_data ( ), .nv_wrote ( ),
@@ -928,7 +943,7 @@ module f3_pocket_top (
 		.pf_wr_cnt  ( dbg_pf_wr_cnt ), .spr_wr_cnt ( dbg_spr_wr_cnt ), .spr_wr_stb ( spr_wr_stb ),
 		.pal_wr_cnt ( dbg_pal_wr_cnt ), .pal_wr_hi ( ), .pal_wr_lo ( ), .line_wr_cnt ( dbg_line_wr_cnt ),
 		.vid_vcnt   ( vid_vcnt ), .vctrl_wr_dbg ( ),
-		.cpu_speed  ( cpu_speed ), .cpu_spin ( ),
+		.cpu_speed  ( 3'd0 ), .cpu_spin ( ),
 		.zone_inj   ( 2'd0 ),
 		.txt_wr_cnt ( ),
 		.irq2_rate  ( ), .irq3_rate ( ), .irq_rate_valid ( ),
@@ -1040,15 +1055,11 @@ module f3_pocket_top (
 	rayforce_video u_vid_timing (
 		.clk        ( clk_sys ),
 		.reset      ( reset ),
-		.dl_active  ( ioctl_download_sys ), .dl_seen ( boot_done_sys ), .dl_bytes ( dbg_dl_bytes ), .dl_sum ( {dbg_rom_w0, dbg_rom_w1} ), .dl_index ( ioctl_index ),
+		.dl_active  ( ioctl_download_sys ), .dl_seen ( boot_done_sys ), .dl_bytes ( dbg_dl_bytes ), .dl_sum ( {dbg_rom_w0, dbg_rom_w1} ), .dl_index ( {fifo_ovf, 3'b000, dbg_rst_cnt} ),
 		.trap_oor   ( dbg_trap_oor ), .wr_count ( dbg_wr_count ), .wr_hash ( dbg_wr_hash ), .last_pc ( dbg_last_pc ),
-		.bist_sum   ( (sdram_err_cnt != 16'd0 || sram_err_cnt != 16'd0) ? {sdram_err_cnt, sram_err_cnt} : rom_bist_sum ),
-		.bist_done  ( sdram_bist_done_sys ),
+		.bist_sum   ( {sdram_err_cnt, sram_err_cnt} ), .bist_done ( sdram_bist_done_sys ),
 		.frame_cnt  ( dbg_frame_cnt ), .irq2_cnt ( dbg_irq2_cnt ), .irq3_cnt ( dbg_irq3_cnt ),
-		.pf_wr_cnt  ( {snd_reset, dbg_snd_running, 2'd0, dbg_wait_state, dbg_snd_pc[23:16]} ),
-		.spr_wr_cnt ( dbg_snd_pc[15:0] ),
-		.pal_wr_cnt ( dbg_pal_wr_cnt ),
-		.line_wr_cnt( dbg_cpu_addr[15:0] ),
+		.pf_wr_cnt  ( dbg_rom_w2 ), .spr_wr_cnt ( dbg_rom_w3 ), .pal_wr_cnt ( dbg_pal_wr_cnt ), .line_wr_cnt ( sdram_first_bad ),
 		.v_pal_addr ( ), .v_pal_q ( 16'd0 ),
 		.vis_mode   ( cfg_vis ),
 		.rate_60    ( 1'b0 ),
@@ -1121,9 +1132,9 @@ module f3_pocket_top (
 		.es_rd_valid( es_rd_valid ),
 		.ring_we    ( ),
 		.ring_data  ( ),
-		.last_pc    ( dbg_snd_pc ),
+		.last_pc    ( ),
 		.es_wr_cnt  ( ),
-		.running    ( dbg_snd_running ),
+		.running    ( ),
 		.ext_ram_addr ( snd_ext_ram_addr ),
 		.ext_ram_wdata( snd_ext_ram_wdata ),
 		.ext_ram_be   ( snd_ext_ram_be ),
