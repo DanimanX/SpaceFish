@@ -388,19 +388,19 @@ module rf_video_spr
     // boss frames (rec_drop counts them), which is far better than rows
     // ALIASED. Any future NREC must satisfy 2*NREC <= 2^RW, or RW must grow
     // -- and the map report's NUMWORDS for rec_rtl_0 must be checked.
-    localparam int NREC = 2048;         // per bank -- 9 M10K blocks total
+    localparam int NREC = 4096;         // per bank -- 18 M10K blocks total
     localparam int RW   = 14;           // record index width
     localparam int RW1  = RW + 1;       // the prefix sum reaches NREC
     // record: {sidx[9:0], srow_a[3:0], srow_b[3:0]} -- the run's first and
     // last source row. The draw steps from a toward b, so the direction
     // (rows walk 15 -> 0, and flipy inverts the source row) is implied.
-    // 2 banks x 2048 records x 18 bits in M10K (1-cycle registered read)
+    // 2 banks x 4096 records x 18 bits in M10K (1-cycle registered read)
     wire        rec_we    = (pst == P_EWR) && (f_rd != l_rd);
-    wire [11:0] rec_waddr = {wb, f_rd[10:0]};
+    wire [12:0] rec_waddr = {wb, f_rd[11:0]};
     wire [17:0] rec_wdata = {ex_i[9:0], e_a, e_b};
-    wire [11:0] rec_raddr = {rb, fc[10:0]};
+    wire [12:0] rec_raddr = {rb, fc[11:0]};
     wire [17:0] rc_w;
-    rf_bram #(.WIDTH(18), .AW(12)) u_rec (
+    rf_bram #(.WIDTH(18), .AW(13)) u_rec (
         .clk(clk),
         .waddr(rec_waddr), .wdata(rec_wdata), .wren(rec_we),
         .raddr(rec_raddr), .q(rc_w)

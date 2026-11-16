@@ -171,6 +171,7 @@ localparam STATE_RFSH    = 10;
 
 
 always @(posedge clk) begin
+    (* altera_attribute = "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF" *)
     reg [CAS_LATENCY+BURST_LENGTH+1:0] data_ready_delay1, data_ready_delay2, data_ready_delay3, data_ready_delay4, data_ready_delay5, data_ready_delay6, data_ready_delay7, data_ready_delay8;
 
     reg        saved_wr;

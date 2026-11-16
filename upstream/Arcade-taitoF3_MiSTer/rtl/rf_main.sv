@@ -393,7 +393,7 @@ module rf_main #(
                     clkena_r <= 1'b1;
                 end
             end else if (ram_wait) begin
-                if (ext_ram_ack_lat) begin
+                if (ext_ram_ack || ext_ram_ack_lat) begin
                     ram_wait <= 1'b0;
                     clkena_r <= 1'b1;
                 end

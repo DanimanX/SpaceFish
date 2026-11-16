@@ -174,7 +174,7 @@ module rf_spr_gfx_bus
     logic            fill;
     wire [95:0]      pix_fetch;
 
-    rf_bram #(.WIDTH(CTAGW+1), .AW(CIDXW)) u_ctag (
+    rf_bram #(.WIDTH(CTAGW+1), .AW(CIDXW), .RAMSTYLE("MLAB")) u_ctag (
         .clk(clk_cpu),
         .waddr(clring ? clr_a[CIDXW-1:0] : cidx_r),
         .wdata(clring ? {(CTAGW+1){1'b0}} : {1'b1, ctag_r}),

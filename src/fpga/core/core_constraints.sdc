@@ -6,7 +6,8 @@
 set_clock_groups -asynchronous \
     -group [get_clocks {clk_74a clk_74b}] \
     -group [get_clocks {*u_pll*counter[0].output_counter|divclk}] \
-    -group [get_clocks {*u_pll*counter[1].output_counter|divclk *u_pll*counter[2].output_counter|divclk *u_pll*counter[3].output_counter|divclk}]
+    -group [get_clocks {*u_pll*counter[1].output_counter|divclk *u_pll*counter[2].output_counter|divclk *u_pll*counter[3].output_counter|divclk}] \
+    -group [get_clocks {*u_audio_pll*counter[0].output_counter|divclk}]
 
 # TG68K advances only on clkena_in (every other clk_sys cycle or slower)
 set_multicycle_path -setup 2 \

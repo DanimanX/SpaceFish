@@ -84,6 +84,7 @@ module f3_pocket_top (
 	wire clk_pix;         //  6.67 MHz (Pixel clock)
 	wire clk_pix_90;      //  6.67 MHz (+90 deg)
 	wire pll_locked;
+	wire clk_audio_mclk;  // 12.288 MHz (Audio MCLK)
 
 	f3_pll u_pll (
 		.refclk    ( clk_74a ),
@@ -93,6 +94,13 @@ module f3_pocket_top (
 		.clk_pix   ( clk_pix ),
 		.clk_pix_90( clk_pix_90 ),
 		.locked    ( pll_locked )
+	);
+
+	f3_audio_pll u_audio_pll (
+		.refclk     ( clk_74a ),
+		.rst        ( 1'b0 ),
+		.audio_mclk ( clk_audio_mclk ),
+		.locked     ( )
 	);
 
 	assign video_rgb_clock    = clk_pix;
@@ -108,6 +116,7 @@ module f3_pocket_top (
 	wire         core_reset_btn;
 	wire         service_mode;
 	wire [1:0]   audio_boost;
+	wire [2:0]   cpu_speed;
 
 	wire         ioctl_download;
 	wire         ioctl_wr;
@@ -136,6 +145,7 @@ module f3_pocket_top (
 		.core_reset_btn ( core_reset_btn ),
 		.service_mode   ( service_mode ),
 		.audio_boost    ( audio_boost ),
+		.cpu_speed      ( cpu_speed ),
 
 		.ioctl_download ( ioctl_download ),
 		.ioctl_wr       ( ioctl_wr ),
@@ -221,7 +231,7 @@ module f3_pocket_top (
 		end else if (!sdram_bist_done) begin
 			case (sdram_bist_st)
 				3'd0: begin // Issue write
-					bist_ch8_addr <= 26'h0B00000 + {18'd0, sdram_bist_idx};
+					bist_ch8_addr <= 26'h1900000 + {18'd0, sdram_bist_idx};
 					bist_ch8_din  <= {8'd0, sdram_bist_idx} ^ 16'h5A3C;
 					bist_ch8_rnw  <= 1'b0;
 					bist_ch8_req  <= 1'b1;
@@ -240,7 +250,7 @@ module f3_pocket_top (
 					end
 				end
 				3'd2: begin // Issue 4-word burst read
-					bist_ch8_addr <= 26'h0B00000 + {18'd0, sdram_bist_idx[7:2], 2'b00};
+					bist_ch8_addr <= 26'h1900000 + {18'd0, sdram_bist_idx[7:2], 2'b00};
 					bist_ch8_rnw  <= 1'b1;
 					bist_ch8_req  <= 1'b1;
 					sdram_bist_st <= 3'd3;
@@ -734,9 +744,10 @@ module f3_pocket_top (
 	reg         sram_dq_oe  = 1'b0;
 	assign sram_dq = sram_dq_oe ? sram_dq_out : 16'hzzzz;
 
-	localparam [1:0] SR_IDLE = 2'd0, SR_WAIT = 2'd1, SR_DONE = 2'd2;
-	reg [1:0] sram_st = SR_IDLE;
+	localparam [0:0] SR_IDLE = 1'd0, SR_WAIT = 1'd1;
+	reg       sram_st = SR_IDLE;
 	reg       sram_wr_lat = 1'b0;
+	reg       sram_bist_hi = 1'b0; // 0: main 128KB (a[16]=0), 1: sound 64KB (a[16]=1)
 
 	always @(posedge clk_sys or posedge reset) begin
 		if (reset) begin
@@ -750,14 +761,15 @@ module f3_pocket_top (
 			sram_dq_out     <= 16'd0;
 			ext_ram_ack     <= 1'b0;
 			snd_ext_ram_ack <= 1'b0;
-			main_ram_pend    <= 1'b0;
-			snd_ram_pend     <= 1'b0;
-			sram_owner       <= 1'b0;
-			sram_bist_done   <= 1'b0;
-			sram_bist_active <= 1'b0;
-			sram_bist_phase  <= 3'd0;
-			sram_bist_addr   <= 16'd0;
-			sram_err_cnt     <= 16'd0;
+			main_ram_pend   <= 1'b0;
+			snd_ram_pend    <= 1'b0;
+			sram_owner      <= 1'b0;
+			sram_bist_done  <= 1'b0;
+			sram_bist_active<= 1'b0;
+			sram_bist_phase <= 3'd0;
+			sram_bist_addr  <= 16'd0;
+			sram_bist_hi    <= 1'b0;
+			sram_err_cnt    <= 16'd0;
 		end else begin
 			ext_ram_ack     <= 1'b0;
 			snd_ext_ram_ack <= 1'b0;
@@ -768,6 +780,7 @@ module f3_pocket_top (
 				sram_bist_active <= 1'b0;
 				sram_bist_phase  <= 3'd0;
 				sram_bist_addr   <= 16'd0;
+				sram_bist_hi     <= 1'b0;
 				sram_err_cnt     <= 16'd0;
 			end
 
@@ -778,7 +791,7 @@ module f3_pocket_top (
 					sram_dq_oe <= 1'b0;
 					if (!sram_bist_done && boot_done_sys && !ioctl_download_sys) begin
 						sram_bist_active <= 1'b1;
-						sram_a           <= {1'b0, sram_bist_addr};
+						sram_a           <= {sram_bist_hi, sram_bist_addr};
 						sram_ub_n        <= (sram_bist_phase == 3'd3);
 						sram_lb_n        <= (sram_bist_phase == 3'd2);
 						sram_wr_lat      <= (sram_bist_phase != 3'd1 && sram_bist_phase != 3'd4);
@@ -838,11 +851,7 @@ module f3_pocket_top (
 				end
 
 				SR_WAIT: begin
-					// 1 full clk_sys (18.7 ns) settle time (> 10 ns SRAM access/write pulse)
-					sram_st <= SR_DONE;
-				end
-
-				SR_DONE: begin
+					// 1 full clk_sys (18.74 ns) settle time (> 10 ns SRAM tAA/tWP): capture & ack directly
 					if (sram_bist_active) begin
 						if ((sram_bist_phase == 3'd1 && (sram_dq !== (sram_bist_addr ^ 16'hA55A))) ||
 						    (sram_bist_phase == 3'd4 && (sram_dq !== 16'h3CA5))) begin
@@ -850,10 +859,17 @@ module f3_pocket_top (
 								sram_err_cnt <= sram_err_cnt + 16'd1;
 						end
 						sram_bist_active <= 1'b0;
-						if (sram_bist_addr == 16'hFFFF) begin
-							if (sram_bist_phase == 3'd5)
-								sram_bist_done <= 1'b1;
-							else begin
+						if ((!sram_bist_hi && sram_bist_addr == 16'hFFFF) ||
+						    ( sram_bist_hi && sram_bist_addr == 16'h7FFF)) begin
+							if (sram_bist_phase == 3'd5) begin
+								if (sram_bist_hi) begin
+									sram_bist_done <= 1'b1;
+								end else begin
+									sram_bist_hi    <= 1'b1;
+									sram_bist_phase <= 3'd0;
+									sram_bist_addr  <= 16'd0;
+								end
+							end else begin
 								sram_bist_phase <= sram_bist_phase + 3'd1;
 								sram_bist_addr  <= 16'd0;
 							end
@@ -869,10 +885,9 @@ module f3_pocket_top (
 					end
 					sram_oe_n   <= 1'b1;
 					sram_we_n   <= 1'b1;
+					sram_dq_oe  <= 1'b0;
 					sram_st     <= SR_IDLE;
 				end
-
-				default: sram_st <= SR_IDLE;
 			endcase
 		end
 	end
@@ -913,7 +928,7 @@ module f3_pocket_top (
 		.pf_wr_cnt  ( dbg_pf_wr_cnt ), .spr_wr_cnt ( dbg_spr_wr_cnt ), .spr_wr_stb ( spr_wr_stb ),
 		.pal_wr_cnt ( dbg_pal_wr_cnt ), .pal_wr_hi ( ), .pal_wr_lo ( ), .line_wr_cnt ( dbg_line_wr_cnt ),
 		.vid_vcnt   ( vid_vcnt ), .vctrl_wr_dbg ( ),
-		.cpu_speed  ( 3'd0 ), .cpu_spin ( ),
+		.cpu_speed  ( cpu_speed ), .cpu_spin ( ),
 		.zone_inj   ( 2'd0 ),
 		.txt_wr_cnt ( ),
 		.irq2_rate  ( ), .irq3_rate ( ), .irq_rate_valid ( ),
@@ -1258,27 +1273,90 @@ module f3_pocket_top (
 		.out_r   ( snd_r )
 	);
 
+	// 48 kHz Linear Interpolation Resampler (29.76 kHz ES5505 -> 48 kHz I2S)
+	reg snd_valid = 1'b0;
+	always_ff @(posedge clk_sys) snd_valid <= mix_valid;
+
+	reg signed [15:0] prev_snd_l = 16'sd0, curr_snd_l = 16'sd0;
+	reg signed [15:0] prev_snd_r = 16'sd0, curr_snd_r = 16'sd0;
+	always_ff @(posedge clk_sys) begin
+		if (cpu_reset | snd_reset) begin
+			prev_snd_l <= 16'sd0; curr_snd_l <= 16'sd0;
+			prev_snd_r <= 16'sd0; curr_snd_r <= 16'sd0;
+		end else if (snd_valid) begin
+			prev_snd_l <= curr_snd_l; curr_snd_l <= snd_l;
+			prev_snd_r <= curr_snd_r; curr_snd_r <= snd_r;
+		end
+	end
+
+	// 48 kHz sample strobe in clk_sys (53.3671875 MHz)
+	reg [31:0] aud_48k_acc = 32'd0;
+	reg        aud_48k_stb = 1'b0;
+	always_ff @(posedge clk_sys) begin
+		aud_48k_stb <= 1'b0;
+		if (cpu_reset) begin
+			aud_48k_acc <= 32'd0;
+		end else if (aud_48k_acc + 32'd48000 >= 32'd53367188) begin
+			aud_48k_acc <= aud_48k_acc + 32'd48000 - 32'd53367188;
+			aud_48k_stb <= 1'b1;
+		end else begin
+			aud_48k_acc <= aud_48k_acc + 32'd48000;
+		end
+	end
+
+	// Stage 1: capture fractional phase t = es_acc / 53372000 in [0, 65535] & sample delta
+	wire [32:0] es_t_prod = {1'b0, es_acc[25:10]} * 17'd82399;
+	reg  [15:0] es_t_q = 16'd0;
+	reg signed [16:0] diff_l_q = 17'sd0, diff_r_q = 17'sd0;
+	reg signed [15:0] base_l_q = 16'sd0, base_r_q = 16'sd0;
+	reg               aud_48k_stb_d1 = 1'b0;
+	always_ff @(posedge clk_sys) begin
+		aud_48k_stb_d1 <= aud_48k_stb;
+		if (aud_48k_stb) begin
+			es_t_q   <= es_t_prod[31:16];
+			base_l_q <= prev_snd_l;
+			base_r_q <= prev_snd_r;
+			diff_l_q <= $signed(curr_snd_l) - $signed(prev_snd_l);
+			diff_r_q <= $signed(curr_snd_r) - $signed(prev_snd_r);
+		end
+	end
+
+	// Stage 2: linear interpolation (prev + diff * t)
+	wire signed [33:0] interp_prod_l = diff_l_q * $signed({1'b0, es_t_q});
+	wire signed [33:0] interp_prod_r = diff_r_q * $signed({1'b0, es_t_q});
+	reg signed [15:0] interp_l = 16'sd0, interp_r = 16'sd0;
+	reg               aud_48k_stb_d2 = 1'b0;
+	always_ff @(posedge clk_sys) begin
+		aud_48k_stb_d2 <= aud_48k_stb_d1;
+		if (aud_48k_stb_d1) begin
+			interp_l <= base_l_q + interp_prod_l[31:16];
+			interp_r <= base_r_q + interp_prod_r[31:16];
+		end
+	end
+
 	// Saturating audio boost multiplier (matches Rayforce.sv)
 	wire [2:0] aud_sh = (audio_boost == 2'd0) ? 3'd3 : // 8x
 	                    (audio_boost == 2'd1) ? 3'd0 : // 1x
 	                    (audio_boost == 2'd2) ? 3'd2 : // 4x
 	                                            3'd4;  // 16x
-	wire signed [23:0] aud_wl = 24'($signed(snd_l)) <<< aud_sh;
-	wire signed [23:0] aud_wr = 24'($signed(snd_r)) <<< aud_sh;
+	wire signed [23:0] aud_wl = 24'($signed(interp_l)) <<< aud_sh;
+	wire signed [23:0] aud_wr = 24'($signed(interp_r)) <<< aud_sh;
 	wire signed [15:0] boost_l = (aud_wl >  24'sd32767) ?  16'sd32767 :
 	                             (aud_wl < -24'sd32768) ? -16'sd32768 : aud_wl[15:0];
 	wire signed [15:0] boost_r = (aud_wr >  24'sd32767) ?  16'sd32767 :
 	                             (aud_wr < -24'sd32768) ? -16'sd32768 : aud_wr[15:0];
 
-	// Pocket I2S Audio DAC (48 kHz, 16-bit signed)
+	// Pocket I2S Audio DAC (48 kHz, 16-bit signed, jitter-free PLL MCLK)
 	sound_i2s #(
 		.CHANNEL_WIDTH  ( 16 ),
 		.SIGNED_INPUT   ( 1 )
 	) u_i2s (
 		.clk_74a        ( clk_74a ),
 		.clk_audio      ( clk_sys ),
+		.ext_mclk       ( clk_audio_mclk ),
 		.audio_l        ( boost_l ),
 		.audio_r        ( boost_r ),
+		.audio_stb      ( aud_48k_stb_d2 ),
 		.audio_mclk     ( audio_mclk ),
 		.audio_lrck     ( audio_lrck ),
 		.audio_dac      ( audio_dac )

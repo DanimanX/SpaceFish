@@ -37,6 +37,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) r
 
 # ---- Pocket top (this port)
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/f3_pll.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/f3_audio_pll.sv ]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/pk_io.sv ]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/psram_phy.sv ]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/f3_pocket_top.sv ]

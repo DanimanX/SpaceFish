@@ -29,7 +29,8 @@ module pk_io #(
 	output reg  [31:0] joystick_1 = 32'd0,
 	output reg         core_reset_btn = 1'b0,
 	output reg         service_mode = 1'b0,
-	output reg  [1:0]  audio_boost = 2'd0,
+	output reg  [1:0]  audio_boost = 2'd2,
+	output reg  [2:0]  cpu_speed = 3'd1,
 
 	output reg         ioctl_download = 1'b0,
 	output reg         ioctl_wr = 1'b0,
@@ -47,7 +48,8 @@ module pk_io #(
 	// -------------------------------------------------------------------------
 	reg reset_action_74 = 1'b0;
 	reg service_check_74 = 1'b0;
-	reg [1:0] boost_list_74 = 2'd0;
+	reg [1:0] boost_list_74 = 2'd2;
+	reg [2:0] speed_list_74 = 3'd1;
 
 	always @(posedge clk_74a) begin
 		reset_action_74 <= 1'b0; // 1-cycle pulse
@@ -58,6 +60,8 @@ module pk_io #(
 				service_check_74 <= bridge_wr_data[0];
 			end else if (bridge_addr == (INTERACT_BASE + 32'h8)) begin
 				boost_list_74 <= bridge_wr_data[1:0];
+			end else if (bridge_addr == (INTERACT_BASE + 32'hC)) begin
+				speed_list_74 <= bridge_wr_data[2:0];
 			end
 		end
 	end
@@ -66,14 +70,18 @@ module pk_io #(
 	reg [2:0] rst_act_sync;
 	reg [1:0] srv_sync;
 	reg [1:0] bst_sync;
+	reg [2:0] spd_sync [0:1];
 	always @(posedge clk_sys) begin
 		rst_act_sync <= {rst_act_sync[1:0], reset_action_74};
 		srv_sync     <= {srv_sync[0], service_check_74};
 		bst_sync     <= boost_list_74; // static select
+		spd_sync[0]  <= speed_list_74;
+		spd_sync[1]  <= spd_sync[0];
 
 		core_reset_btn <= rst_act_sync[1] & ~rst_act_sync[2];
 		service_mode   <= srv_sync[1];
 		audio_boost    <= bst_sync;
+		cpu_speed      <= spd_sync[1];
 		status[2]      <= srv_sync[1]; // MiSTer status[2] = Service Mode
 		status[17:16]  <= bst_sync;    // MiSTer status[17:16] = Audio Boost
 	end
@@ -123,11 +131,11 @@ module pk_io #(
 
 	dcfifo #(
 		.intended_device_family("Cyclone V"),
-		.lpm_numwords(1024),
+		.lpm_numwords(256),
 		.lpm_showahead("ON"),
 		.lpm_type("dcfifo"),
 		.lpm_width(32),
-		.lpm_widthu(10),
+		.lpm_widthu(8),
 		.overflow_checking("ON"),
 		.underflow_checking("OFF"),
 		.use_eab("ON")
