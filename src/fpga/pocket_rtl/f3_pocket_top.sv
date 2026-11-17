@@ -717,6 +717,7 @@ module f3_pocket_top (
 	wire [3:0]  dbg_wait_state;
 	wire        dbg_wd_rst;
 	wire [23:0] dbg_cpu_a;
+	wire [23:0] dbg_trap_addr, dbg_trap_prev;
 	wire [15:0] dbg_frame_cnt, dbg_irq2_cnt, dbg_irq3_cnt;
 	wire [15:0] dbg_pf_wr_cnt, dbg_spr_wr_cnt, dbg_pal_wr_cnt, dbg_line_wr_cnt;
 	wire        dbg_trap_oor;
@@ -748,9 +749,10 @@ module f3_pocket_top (
 	wire [2:0] vid_div;
 	wire [8:0] vid_hcnt, vid_vcnt;
 
-	// Async SRAM controller shared by main CPU 128 KB RAM (sram_a[16]=0)
-	// and sound CPU 64 KB RAM (sram_a[16:15]=2'b10) (saves 192 M10K blocks)
-	wire [15:0] ext_ram_addr;
+	// Async SRAM controller shared by main CPU 128 KB RAM, sound CPU 64 KB RAM,
+	// pfx 16 KB and the pivot CPU read-back 8 KB (saves 192 + 24 M10K blocks).
+	// Word addresses: main 0x00000, sound 0x10000, pfx 0x18000, pivot 0x1A000.
+	wire [16:0] ext_ram_addr;
 	wire [15:0] ext_ram_wdata;
 	wire  [1:0] ext_ram_be;
 	wire        ext_ram_wr;
@@ -835,7 +837,7 @@ module f3_pocket_top (
 					end else if (ext_ram_req || main_ram_pend) begin
 						main_ram_pend <= 1'b0;
 						sram_owner    <= 1'b0;
-						sram_a        <= {1'b0, ext_ram_addr};
+						sram_a        <= ext_ram_addr;
 						sram_ub_n     <= ~ext_ram_be[1];
 						sram_lb_n     <= ~ext_ram_be[0];
 						sram_wr_lat   <= ext_ram_wr;
@@ -977,7 +979,9 @@ module f3_pocket_top (
 		.dbg_cpu_addr ( dbg_cpu_addr ),
 		.dbg_wait_state( dbg_wait_state ),
 		.dbg_wd_rst   ( dbg_wd_rst ),
-		.dbg_cpu_a    ( dbg_cpu_a )
+		.dbg_cpu_a    ( dbg_cpu_a ),
+		.dbg_trap_addr( dbg_trap_addr ),
+		.dbg_trap_prev( dbg_trap_prev )
 	);
 
 	// -------------------------------------------------------------------------
@@ -1004,10 +1008,12 @@ module f3_pocket_top (
 			else if (vbl_rise && dbg_vbl_cnt != 16'hFFFF) dbg_vbl_cnt <= dbg_vbl_cnt + 16'd1;
 			if (dbg_wd_rst && !dbg_wd_rst_d) begin
 				if (dbg_wd_cnt != 8'hFF) dbg_wd_cnt <= dbg_wd_cnt + 8'd1;
-				if (dbg_wd_cnt == 8'd0) begin
-					dbg_wd_addr  <= dbg_cpu_a;
-					dbg_wd_frame <= dbg_vbl_cnt;
-				end
+				// Latch on EVERY rising edge, not just the first: the first is
+				// the intentional boot reset (F3 boot code idles at 0x01016E
+				// with interrupts masked; 0x010170 on hardware), so keeping
+				// only that one hides the real crash.
+				dbg_wd_addr  <= dbg_cpu_a;
+				dbg_wd_frame <= dbg_vbl_cnt;
 			end
 		end
 	end
@@ -1096,17 +1102,19 @@ module f3_pocket_top (
 		.clk        ( clk_sys ),
 		.reset      ( reset ),
 		.dl_active  ( ioctl_download_sys ), .dl_seen ( boot_done_sys ), .dl_bytes ( dbg_dl_bytes ), .dl_sum ( {dbg_rom_w0, dbg_rom_w1} ), .dl_index ( {fifo_ovf, 3'b000, dbg_rst_cnt} ),
-		.trap_oor   ( dbg_trap_oor ), .wr_count ( dbg_wr_count ), .wr_hash ( dbg_wr_hash ), .last_pc ( dbg_last_pc ),
+		// Rows 6-10 show the ROM/SDRAM load proofs at boot, and the trap and
+		// watchdog evidence while the Debug Overlay interact is set:
+		//   row 6  : trap_prev[23:16] | trap_addr[23:0]  (first out-of-range fetch)
+		//   row 7  : rec peak | sprite rows dropped
+		//   row 8  : irq3 | trap_prev[15:0]
+		//   row 9  : frame of LAST watchdog reset | wd count, addr[23:16]
+		//   row 10 : addr[15:0] of LAST watchdog reset
+		.trap_oor   ( dbg_trap_oor ), .wr_count ( dbg_wr_count ), .wr_hash ( dbg_wr_hash ), .last_pc ( dbg_overlay ? {dbg_trap_prev[23:16], dbg_trap_addr[23:0]} : dbg_last_pc ),
 		.bist_sum   ( {sdram_err_cnt, sram_err_cnt} ), .bist_done ( sdram_bist_done_sys ),
-		// Rows 7/9/10 show the ROM/SDRAM load proofs at boot, and the watchdog
-		// evidence while the Debug Overlay interact is set:
-		//   row 7  : frame_cnt | sprite rows dropped
-		//   row 9  : frame of 1st watchdog reset | wd count, addr[23:16]
-		//   row 10 : addr[15:0] of 1st watchdog reset
-		.frame_cnt  ( dbg_frame_cnt ), .irq2_cnt ( dbg_overlay ? dbg_rec_drop : dbg_irq2_cnt ), .irq3_cnt ( dbg_irq3_cnt ),
+		.frame_cnt  ( dbg_overlay ? dbg_rec[31:16] : dbg_frame_cnt ), .irq2_cnt ( dbg_overlay ? dbg_rec_drop : dbg_irq2_cnt ), .irq3_cnt ( dbg_irq3_cnt ),
 		.pf_wr_cnt  ( dbg_overlay ? dbg_wd_frame : dbg_rom_w2 ),
 		.spr_wr_cnt ( dbg_overlay ? {dbg_wd_cnt, dbg_wd_addr[23:16]} : dbg_rom_w3 ),
-		.pal_wr_cnt ( dbg_pal_wr_cnt ),
+		.pal_wr_cnt ( dbg_overlay ? dbg_trap_prev[15:0] : dbg_pal_wr_cnt ),
 		.line_wr_cnt( dbg_overlay ? dbg_wd_addr[15:0] : sdram_first_bad ),
 		.v_pal_addr ( ), .v_pal_q ( 16'd0 ),
 		.vis_mode   ( cfg_vis ),
@@ -1123,9 +1131,10 @@ module f3_pocket_top (
 		.vsync      ( vid_vsync )
 	);
 
-	// Direct APF video generation (+ rayforce_video self-test hex overlay while
-	// pal_wr_cnt == 0, or on demand while the Debug Overlay interact is set)
-	assign video_rgb = (dbg_pal_wr_cnt == 16'd0 || dbg_overlay) ? {dbg_vid_r, dbg_vid_g, dbg_vid_b} : game_rgb;
+	// Direct APF video generation. The rayforce_video self-test hex page is
+	// shown only on demand (Debug Overlay interact or L1+R1); the boot no longer
+	// shows it while pal_wr_cnt == 0, so a release starts straight into the game.
+	assign video_rgb = dbg_overlay ? {dbg_vid_r, dbg_vid_g, dbg_vid_b} : game_rgb;
 	assign video_de  = !hblank && !vblank;
 	assign video_hs  = vid_hsync;
 	assign video_vs  = vid_vsync;

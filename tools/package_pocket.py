@@ -26,7 +26,7 @@ Generates bitstream.rbf_r (bit-reversed per APF requirement) and structures:
           Darius Gaiden - Silver Hawk.json
           ...
 
-Also produces a ready-to-extract ZIP archive: Release/SpaceFish_Pocket_v1.0.0.zip
+Also produces a ready-to-extract ZIP archive: Release/SpaceFish_Pocket_v1.0.1.zip
 """
 
 import os
@@ -44,7 +44,7 @@ def main():
     parser.add_argument("--rbf", default="src/fpga/output_files/pocket_spacefish.rbf", help="Path to compiled .rbf bitstream")
     parser.add_argument("--apf", default="apf", help="Path to APF template tree")
     parser.add_argument("--out", default="Release", help="Output directory")
-    parser.add_argument("--version", default="v1.0.0", help="Release version tag")
+    parser.add_argument("--version", default="v1.0.1", help="Release version tag")
     args = parser.parse_args()
 
     here = os.path.abspath(os.path.dirname(__file__) + "/..")

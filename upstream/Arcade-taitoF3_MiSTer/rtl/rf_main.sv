@@ -236,8 +236,10 @@ module rf_main #(
     output logic [10:0] ring_wptr,
     output logic        ring_full,
 
-    // external 128 KB work RAM port (used when EXT_RAM = 1)
-    output logic [15:0] ext_ram_addr,
+    // external SRAM port (used when EXT_RAM = 1): main work RAM, pfx and
+    // the pivot read-back. 17-bit word address, see the mapping at the
+    // request branch below.
+    output logic [16:0] ext_ram_addr,
     output logic [15:0] ext_ram_wdata,
     output logic  [1:0] ext_ram_be,
     output logic        ext_ram_wr,
@@ -249,7 +251,11 @@ module rf_main #(
     // DIAGNOSTIC (Pocket build): the watchdog reset pulse and the CPU bus
     // address live, so the top can count/qualify watchdog reboots.
     output logic        dbg_wd_rst,
-    output logic [23:0] dbg_cpu_a
+    output logic [23:0] dbg_cpu_a,
+    // DIAGNOSTIC (Pocket build): the first out-of-range fetch and the one
+    // before it, latched until reset.
+    output logic [23:0] dbg_trap_addr,
+    output logic [23:0] dbg_trap_prev
 );
 
     // ---- CPU -------------------------------------------------------------
@@ -427,8 +433,14 @@ module rf_main #(
                     prog_addr <= a[21:1];
                     prog_req  <= 1'b1;
                     rom_wait  <= 1'b1;
-                end else if (EXT_RAM && sel_ram && (busstate == 2'b00 || busstate == 2'b10 || busstate == 2'b11)) begin
-                    ext_ram_addr  <= a[16:1];
+                end else if (EXT_RAM && (sel_ram || sel_pfx || sel_pivot)
+                             && (busstate == 2'b00 || busstate == 2'b10 || busstate == 2'b11)) begin
+                    // SRAM word address: main RAM 0x00000-0x0FFFF, pfx
+                    // 0x18000-0x19FFF, pivot read-back 0x1A000-0x1AFFF.
+                    // 0x10000-0x17FFF is the sound CPU's (top level).
+                    ext_ram_addr  <= sel_pfx   ? {4'b1100,  a[13:1]} :
+                                     sel_pivot ? {5'b11010, a[12:1]} :
+                                                 {1'b0,     a[16:1]};
                     ext_ram_wdata <= zone_hit ? ({8'h00, 6'd0, zone_inj} + 16'd1) : cpu_dout;
                     ext_ram_be    <= be;
                     ext_ram_wr    <= (busstate == 2'b11);
@@ -781,9 +793,17 @@ module rf_main #(
     assign ram_q = EXT_RAM ? ext_ram_rdata_lat : int_ram_q;
     assign hs_q = ram_q;
 
-    rf_bram_be #(.AW(13)) u_pfx (
-        .clk(clk), .waddr(a[13:1]), .wdata(cpu_dout),
-        .wren(cpu_wr && sel_pfx && clkena), .be(be), .raddr(a[13:1]), .q(pfx_q));
+    // pfx is CPU-only, so with EXT_RAM it moves to the Pocket's async SRAM
+    // and its M10Ks go to the sprite record store.
+    generate
+        if (!EXT_RAM) begin : g_int_pfx
+            rf_bram_be #(.AW(13)) u_pfx (
+                .clk(clk), .waddr(a[13:1]), .wdata(cpu_dout),
+                .wren(cpu_wr && sel_pfx && clkena), .be(be), .raddr(a[13:1]), .q(pfx_q));
+        end else begin : g_ext_pfx
+            assign pfx_q = 16'd0;       // read mux takes ext_ram_rdata_lat
+        end
+    endgenerate
 
     // MB8421: this CPU on port A, the sound CPU on port B (byte lanes)
     rf_bram_tdp #(.AW(10)) u_dpram (
@@ -868,15 +888,24 @@ module rf_main #(
     // Ray Force is unaffected either way: it only ever clears this RAM, which
     // is what `pivot_wr_cnt` (the PIVOT WR self-test row) counts and proves
     // on every run.
-    // Port A is UNCHANGED: the CPU's read-back path, still 8 KB, still
-    // aliasing above that exactly as it always has. Port B is now unused --
-    // the video reads the full 64 KB store through rf_pivot_bus instead.
-    rf_bram_tdp #(.AW(12)) u_pivot (
-        .clk(clk),
-        .a_addr(a[12:1]), .a_wdata(cpu_dout), .a_wren(cpu_wr && sel_pivot && clkena),
-        .a_be(be), .a_q(pivot_q),
-        .b_addr(12'd0), .b_wdata(16'd0), .b_wren(1'b0), .b_be(2'b00),
-        .b_q());
+    // Port A is UNCHANGED when EXT_RAM is clear: the CPU's read-back path,
+    // still 8 KB, still aliasing above that exactly as it always has. Port B
+    // is now unused -- the video reads the full 64 KB store through
+    // rf_pivot_bus instead.
+    // With EXT_RAM the read-back leaves block RAM entirely (SRAM word
+    // 0x1A000): CPU-only, and rf_pivot_bus keeps feeding the video.
+    generate
+        if (!EXT_RAM) begin : g_int_pivot
+            rf_bram_tdp #(.AW(12)) u_pivot (
+                .clk(clk),
+                .a_addr(a[12:1]), .a_wdata(cpu_dout), .a_wren(cpu_wr && sel_pivot && clkena),
+                .a_be(be), .a_q(pivot_q),
+                .b_addr(12'd0), .b_wdata(16'd0), .b_wren(1'b0), .b_be(2'b00),
+                .b_q());
+        end else begin : g_ext_pivot
+            assign pivot_q = 16'd0;     // read mux takes ext_ram_rdata_lat
+        end
+    endgenerate
 
     // The row being displayed is implied by the address the video asks for
     // (addr[8:4] = ys[7:3]), so nothing in rf_video_pivot has to change and
@@ -945,11 +974,11 @@ module rf_main #(
             SRC_PAL:   cpu_din = pal_q;
             SRC_SPR:   cpu_din = spr_q;
             SRC_PF:    cpu_din = pf_q;
-            SRC_PFX:   cpu_din = pfx_q;
+            SRC_PFX:   cpu_din = EXT_RAM ? ext_ram_rdata_lat : pfx_q;
             SRC_TEXT:  cpu_din = text_q;
             SRC_CHAR:  cpu_din = char_q;
             SRC_LINE:  cpu_din = line_q;
-            SRC_PIVOT: cpu_din = pivot_q;
+            SRC_PIVOT: cpu_din = EXT_RAM ? ext_ram_rdata_lat : pivot_q;
             SRC_DPRAM: cpu_din = dpram_q;
             SRC_CTRL:  cpu_din = ctrl_hold;
             SRC_VCTRL: cpu_din = vctrl_hold;
@@ -1229,18 +1258,36 @@ module rf_main #(
                     && (a[16:1] == 16'h1189) && (cpu_dout == 16'h0001);
 
     // ---- fetch monitor ---------------------------------------------------
+    // trap_oor alone says the CPU jumped to an unmapped address; the fetch
+    // it came FROM is what identifies the instruction, so the pair is
+    // latched the first time and held until reset.
+    logic [31:0] prev_pc;
+    logic [23:0] trap_addr, trap_prev;
     always_ff @(posedge clk) begin
         if (reset) begin
-            last_pc  <= 32'd0;
-            trap_oor <= 1'b0;
+            last_pc   <= 32'd0;
+            prev_pc   <= 32'd0;
+            trap_oor  <= 1'b0;
+            trap_addr <= 24'd0;
+            trap_prev <= 24'd0;
         end else if (clkena && busstate == 2'b00) begin
+            prev_pc <= last_pc;
             last_pc <= cpu_addr;
-            if (!sel_rom && !sel_ram) trap_oor <= 1'b1;
+            if (!sel_rom && !sel_ram) begin
+                // last_pc still holds the previous fetch at this edge
+                if (!trap_oor) begin
+                    trap_addr <= cpu_addr[23:0];
+                    trap_prev <= last_pc[23:0];
+                end
+                trap_oor <= 1'b1;
+            end
         end
     end
     assign dbg_cpu_addr   = cpu_addr;
     assign dbg_wait_state = {ram_wait, rom_wait, busstate};
     assign dbg_wd_rst     = wd_rst;
     assign dbg_cpu_a      = a;
+    assign dbg_trap_addr  = trap_addr;
+    assign dbg_trap_prev  = trap_prev;
 
 endmodule
