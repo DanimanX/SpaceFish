@@ -388,19 +388,25 @@ module rf_video_spr
     // boss frames (rec_drop counts them), which is far better than rows
     // ALIASED. Any future NREC must satisfy 2*NREC <= 2^RW, or RW must grow
     // -- and the map report's NUMWORDS for rec_rtl_0 must be checked.
-    localparam int NREC = 4096;         // per bank -- 18 M10K blocks total
+    // 8192 per bank again, 2026-11-17: Darius Gaiden dropped rows. On the
+    // hardware overlay SPR REC:DROP read FFFF (saturated) at NREC = 2048,
+    // which c368298 cut from 4096 to free M10K; boards have measured 10,836
+    // records in heavy frames. The 24 M10K blocks this costs came from
+    // moving pfx and the pivot CPU read-back into the Pocket SRAM.
+    localparam int NREC = 8192;         // per bank -- 32 M10K blocks total
     localparam int RW   = 14;           // record index width
     localparam int RW1  = RW + 1;       // the prefix sum reaches NREC
     // record: {sidx[9:0], srow_a[3:0], srow_b[3:0]} -- the run's first and
     // last source row. The draw steps from a toward b, so the direction
     // (rows walk 15 -> 0, and flipy inverts the source row) is implied.
-    // 2 banks x 4096 records x 18 bits in M10K (1-cycle registered read)
+    // 2 banks x 8192 records x 18 bits in M10K (1-cycle registered read)
+    // 2*8192 = 2^14, so RW stays 14 and no record can alias onto another.
     wire        rec_we    = (pst == P_EWR) && (f_rd != l_rd);
-    wire [12:0] rec_waddr = {wb, f_rd[11:0]};
+    wire [13:0] rec_waddr = {wb, f_rd[12:0]};
     wire [17:0] rec_wdata = {ex_i[9:0], e_a, e_b};
-    wire [12:0] rec_raddr = {rb, fc[11:0]};
+    wire [13:0] rec_raddr = {rb, fc[12:0]};
     wire [17:0] rc_w;
-    rf_bram #(.WIDTH(18), .AW(13)) u_rec (
+    rf_bram #(.WIDTH(18), .AW(14)) u_rec (
         .clk(clk),
         .waddr(rec_waddr), .wdata(rec_wdata), .wren(rec_we),
         .raddr(rec_raddr), .q(rc_w)

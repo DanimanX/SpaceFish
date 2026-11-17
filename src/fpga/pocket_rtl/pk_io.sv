@@ -29,8 +29,8 @@ module pk_io #(
 	output reg  [31:0] joystick_1 = 32'd0,
 	output reg         core_reset_btn = 1'b0,
 	output reg         service_mode = 1'b0,
-	output reg  [1:0]  audio_boost = 2'd2,
-	output reg  [2:0]  cpu_speed = 3'd1,
+	output reg         dbg_overlay = 1'b0,
+	output reg  [1:0]  audio_boost = 2'd0,
 
 	output reg         ioctl_download = 1'b0,
 	output reg         ioctl_wr = 1'b0,
@@ -46,42 +46,65 @@ module pk_io #(
 	// -------------------------------------------------------------------------
 	// 1. APF interact.json register handler (clk_74a)
 	// -------------------------------------------------------------------------
-	reg reset_action_74 = 1'b0;
+	reg reset_tog_74 = 1'b0;   // toggles on each Reset Core action (CDC-safe)
 	reg service_check_74 = 1'b0;
-	reg [1:0] boost_list_74 = 2'd2;
-	reg [2:0] speed_list_74 = 3'd1;
+	reg dbg_overlay_74 = 1'b0;
+	reg [1:0] boost_list_74 = 2'd0;
 
+	// The Pocket menu's own reset arrives as host commands Reset Enter/Exit,
+	// which only move apf_reset_n (core_bridge_cmd). Its rising edge (Reset
+	// Exit) requests the same core reset as the interact.json action. The
+	// ROM stays in SDRAM, so the game restarts without a reload.
+	reg apf_reset_n_d = 1'b0;
 	always @(posedge clk_74a) begin
-		reset_action_74 <= 1'b0; // 1-cycle pulse
-		if (bridge_wr) begin
+		apf_reset_n_d <= apf_reset_n;
+		if (apf_reset_n && !apf_reset_n_d) reset_tog_74 <= ~reset_tog_74;
+		else if (bridge_wr) begin
 			if (bridge_addr == INTERACT_BASE) begin
-				reset_action_74 <= bridge_wr_data[0];
+				if (bridge_wr_data[0]) reset_tog_74 <= ~reset_tog_74;
 			end else if (bridge_addr == (INTERACT_BASE + 32'h4)) begin
 				service_check_74 <= bridge_wr_data[0];
 			end else if (bridge_addr == (INTERACT_BASE + 32'h8)) begin
 				boost_list_74 <= bridge_wr_data[1:0];
 			end else if (bridge_addr == (INTERACT_BASE + 32'hC)) begin
-				speed_list_74 <= bridge_wr_data[2:0];
+				// either byte order: bridge_endian_little may swap the value's bytes
+				dbg_overlay_74 <= bridge_wr_data[0] | bridge_wr_data[24];
 			end
 		end
 	end
 
 	// Sync interact registers to clk_sys
-	reg [2:0] rst_act_sync;
+	// clk_74a (74.25 MHz) is faster than clk_sys (53.37 MHz): a 1-cycle pulse
+	// could be missed, so the reset request crosses as a toggle and is then
+	// stretched to 65536 clk_sys cycles (~1.2 ms) so every block sees it.
+	reg [2:0] rst_act_sync = 3'd0;
 	reg [1:0] srv_sync;
-	reg [1:0] bst_sync;
-	reg [2:0] spd_sync [0:1];
+	reg [1:0] ovl_sync;
+	// L1+R1 held ~20 ms toggles the debug overlay, independent of interact
+	reg [20:0] ovl_hold = 21'd0;
+	reg        ovl_tog  = 1'b0;
 	always @(posedge clk_sys) begin
-		rst_act_sync <= {rst_act_sync[1:0], reset_action_74};
+		if (!(pad_key[8] && pad_key[9])) ovl_hold <= 21'd0;
+		else if (!ovl_hold[20]) begin
+			ovl_hold <= ovl_hold + 21'd1;
+			if (ovl_hold == 21'h0FFFFF) ovl_tog <= ~ovl_tog;
+		end
+	end
+	reg [1:0] bst_sync;
+	reg [15:0] rst_stretch = 16'd0;
+	always @(posedge clk_sys) begin
+		rst_act_sync <= {rst_act_sync[1:0], reset_tog_74};
 		srv_sync     <= {srv_sync[0], service_check_74};
+		ovl_sync     <= {ovl_sync[0], dbg_overlay_74};
 		bst_sync     <= boost_list_74; // static select
-		spd_sync[0]  <= speed_list_74;
-		spd_sync[1]  <= spd_sync[0];
 
-		core_reset_btn <= rst_act_sync[1] & ~rst_act_sync[2];
+		if (rst_act_sync[2] ^ rst_act_sync[1]) rst_stretch <= 16'hFFFF;
+		else if (rst_stretch != 16'd0)         rst_stretch <= rst_stretch - 16'd1;
+
+		core_reset_btn <= (rst_stretch != 16'd0);
 		service_mode   <= srv_sync[1];
+		dbg_overlay    <= ovl_sync[1] ^ ovl_tog;
 		audio_boost    <= bst_sync;
-		cpu_speed      <= spd_sync[1];
 		status[2]      <= srv_sync[1]; // MiSTer status[2] = Service Mode
 		status[17:16]  <= bst_sync;    // MiSTer status[17:16] = Audio Boost
 	end
@@ -113,15 +136,19 @@ module pk_io #(
 
 	// Payload FIFO from clk_74a to clk_sys
 	wire fifo_wr = is_payload;
-	wire [31:0] fifo_din = bridge_wr_data;
-	wire [31:0] fifo_dout;
+	// The bridge word address travels with the data: the SDRAM write address
+	// is taken from the bridge, never from a local counter, so a dropped word
+	// leaves a hole instead of shifting everything loaded after it.
+	wire [56:0] fifo_din = {bridge_addr[26:2], bridge_wr_data};
+	wire [56:0] fifo_dout;
 	wire fifo_empty;
 	wire fifo_full;
 	reg  fifo_rd = 1'b0;
 
 	reg fifo_ovf_74 = 1'b0;
 	always @(posedge clk_74a) begin
-		if (fifo_wr && fifo_full) fifo_ovf_74 <= 1'b1;
+		if (is_header && (bridge_addr[3:0] == 4'h0)) fifo_ovf_74 <= 1'b0; // new load
+		else if (fifo_wr && fifo_full)               fifo_ovf_74 <= 1'b1;
 	end
 	reg [1:0] ovf_sync = 2'd0;
 	always @(posedge clk_sys) begin
@@ -131,11 +158,11 @@ module pk_io #(
 
 	dcfifo #(
 		.intended_device_family("Cyclone V"),
-		.lpm_numwords(256),
-		.lpm_showahead("ON"),
+		.lpm_numwords(1024),
+		.lpm_showahead("OFF"),
 		.lpm_type("dcfifo"),
-		.lpm_width(32),
-		.lpm_widthu(8),
+		.lpm_width(57),
+		.lpm_widthu(10),
 		.overflow_checking("ON"),
 		.underflow_checking("OFF"),
 		.use_eab("ON")
@@ -169,12 +196,14 @@ module pk_io #(
 		S_LOAD_LO_INC = 4'd8,
 		S_LOAD_HI     = 4'd9, // Emit high 16-bit word
 		S_LOAD_HI_INC = 4'd10,
-		S_RUN         = 4'd11;
+		S_RUN         = 4'd11,
+		S_LOAD_WAIT   = 4'd12; // 1-cycle dcfifo registered output latency
 
 	reg [3:0]  state = S_IDLE;
 	reg [31:0] lat_word = 32'd0;
+	reg [26:0] lat_addr = 27'd0;
 	reg [15:0] latched_cfg_ram = 16'd0;
-	reg [7:0]  dsc_wait = 8'd0;
+	reg [3:0]  dsc_wait = 4'd0;
 
 	always @(posedge clk_ram or negedge pll_locked) begin
 		if (!pll_locked) begin
@@ -229,18 +258,28 @@ module pk_io #(
 
 				S_LOAD_RD: begin
 					if (!fifo_empty) begin
-						dsc_wait <= 8'd0;
-						lat_word <= fifo_dout;
+						dsc_wait <= 4'd0;
 						fifo_rd  <= 1'b1;
-						state    <= S_LOAD_LO;
+						state    <= S_LOAD_WAIT;
 					end else if (dsc_complete_ram) begin
 						if (&dsc_wait) state <= S_RUN;
-						else dsc_wait <= dsc_wait + 8'd1;
+						else dsc_wait <= dsc_wait + 4'd1;
 					end
+				end
+
+				S_LOAD_WAIT: begin
+					state <= S_LOAD_LAT;
+				end
+
+				S_LOAD_LAT: begin
+					lat_word <= fifo_dout[31:0];
+					lat_addr <= {fifo_dout[56:32], 2'b00} - 27'h10; // strip 16-byte header
+					state    <= S_LOAD_LO;
 				end
 
 				S_LOAD_LO: begin
 					if (!ioctl_wait) begin
+						ioctl_addr <= lat_addr;
 						ioctl_dout <= lat_word[15:0];
 						ioctl_wr   <= 1'b1;
 						state      <= S_LOAD_LO_INC;
@@ -248,12 +287,12 @@ module pk_io #(
 				end
 
 				S_LOAD_LO_INC: begin
-					ioctl_addr <= ioctl_addr + 27'd2;
 					state      <= S_LOAD_HI;
 				end
 
 				S_LOAD_HI: begin
 					if (!ioctl_wait) begin
+						ioctl_addr <= lat_addr + 27'd2;
 						ioctl_dout <= lat_word[31:16];
 						ioctl_wr   <= 1'b1;
 						state      <= S_LOAD_HI_INC;
@@ -261,15 +300,7 @@ module pk_io #(
 				end
 
 				S_LOAD_HI_INC: begin
-					ioctl_addr <= ioctl_addr + 27'd2;
-					if (!fifo_empty) begin
-						dsc_wait <= 8'd0;
-						lat_word <= fifo_dout;
-						fifo_rd  <= 1'b1;
-						state    <= S_LOAD_LO;
-					end else begin
-						state    <= S_LOAD_RD;
-					end
+					state      <= S_LOAD_RD;
 				end
 
 				S_RUN: begin

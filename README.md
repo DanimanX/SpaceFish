@@ -69,7 +69,7 @@ An openFPGA port of the **Taito F3 Arcade System** for the **Analogue Pocket**, 
 
 ## Installation & Setup
 
-1. Download the latest release ZIP from the [Releases](Release/) folder (`SpaceFish_Pocket_v1.0.0.zip`).
+1. Download the latest release ZIP from the [Releases](Release/) folder (`SpaceFish_Pocket_v1.0.1.zip`).
 2. Extract the contents directly to the root of your Analogue Pocket MicroSD card:
    ```
    /
@@ -142,7 +142,7 @@ An openFPGA port of the **Taito F3 Arcade System** for the **Analogue Pocket**, 
 ```bash
 python3 tools/package_pocket.py
 ```
-This generates the bit-reversed `bitstream.rbf_r`, copies the APF metadata, and creates `Release/SpaceFish_Pocket_v1.0.0.zip`.
+This generates the bit-reversed `bitstream.rbf_r`, copies the APF metadata, and creates `Release/SpaceFish_Pocket_v1.0.1.zip`.
 
 ---
 

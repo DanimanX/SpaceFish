@@ -42,7 +42,7 @@ module rf_pivot_bus #(
     // SDRAM word address of the 32768-word pivot store. Core-private space
     // ABOVE the 18.5 MB game stream (0x1280000 bytes = 0x940000 words), so
     // it is not part of any MRA and no MRA has to be re-issued.
-    parameter [26:1] BASE = 26'h1800000
+    parameter [26:1] BASE = 26'h0A00000
 ) (
     input  logic        reset,
 

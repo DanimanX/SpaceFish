@@ -15,7 +15,21 @@
                 "id": 1,
                 "type": "check",
                 "enabled": true,
+                "persist": false,
+                "writeonly": true,
                 "address": "0xF0000004",
+                "value": 1,
+                "defaultval": 0
+            },
+            {
+                "name": "Debug Overlay",
+                "id": 3,
+                "type": "check",
+                "enabled": true,
+                "persist": false,
+                "writeonly": true,
+                "address": "0xF000000C",
+                "value": 1,
                 "defaultval": 0
             },
             {
@@ -23,6 +37,8 @@
                 "id": 2,
                 "type": "list",
                 "enabled": true,
+                "persist": true,
+                "writeonly": true,
                 "address": "0xF0000008",
                 "options": [
                     { "name": "8x", "value": 0 },
@@ -31,20 +47,6 @@
                     { "name": "16x", "value": 3 }
                 ],
                 "defaultval": 2
-            },
-            {
-                "name": "CPU Speed",
-                "id": 3,
-                "type": "list",
-                "enabled": true,
-                "address": "0xF000000C",
-                "options": [
-                    { "name": "Normal (1.27x - Default)", "value": 1 },
-                    { "name": "Fast (1.50x)", "value": 2 },
-                    { "name": "Turbo (2.00x)", "value": 3 },
-                    { "name": "Original (As Built)", "value": 0 }
-                ],
-                "defaultval": 1
             }
         ],
         "messages": null

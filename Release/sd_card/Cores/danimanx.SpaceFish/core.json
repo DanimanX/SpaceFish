@@ -9,8 +9,8 @@
             "description": "Taito F3 System arcade multigame core (Darius Gaiden, Ray Force, Bubble Bobble II, Elevator Action Returns, Puzzle Bobble 2-4, and more), ported from Arcade-taitoF3_MiSTer.",
             "author": "danimanx",
             "url": "https://github.com/DanimanX/SpaceFish",
-            "version": "1.0.0",
-            "date_release": "2026-11-12"
+            "version": "1.0.1",
+            "date_release": "2026-11-17"
         },
         "framework": {
             "target_product": "Analogue Pocket",
