@@ -67,7 +67,8 @@ module pk_io #(
 			end else if (bridge_addr == (INTERACT_BASE + 32'h8)) begin
 				boost_list_74 <= bridge_wr_data[1:0];
 			end else if (bridge_addr == (INTERACT_BASE + 32'hC)) begin
-				dbg_overlay_74 <= bridge_wr_data[0];
+				// either byte order: bridge_endian_little may swap the value's bytes
+				dbg_overlay_74 <= bridge_wr_data[0] | bridge_wr_data[24];
 			end
 		end
 	end
@@ -79,6 +80,16 @@ module pk_io #(
 	reg [2:0] rst_act_sync = 3'd0;
 	reg [1:0] srv_sync;
 	reg [1:0] ovl_sync;
+	// L1+R1 held ~20 ms toggles the debug overlay, independent of interact
+	reg [20:0] ovl_hold = 21'd0;
+	reg        ovl_tog  = 1'b0;
+	always @(posedge clk_sys) begin
+		if (!(pad_key[8] && pad_key[9])) ovl_hold <= 21'd0;
+		else if (!ovl_hold[20]) begin
+			ovl_hold <= ovl_hold + 21'd1;
+			if (ovl_hold == 21'h0FFFFF) ovl_tog <= ~ovl_tog;
+		end
+	end
 	reg [1:0] bst_sync;
 	reg [15:0] rst_stretch = 16'd0;
 	always @(posedge clk_sys) begin
@@ -92,7 +103,7 @@ module pk_io #(
 
 		core_reset_btn <= (rst_stretch != 16'd0);
 		service_mode   <= srv_sync[1];
-		dbg_overlay    <= ovl_sync[1];
+		dbg_overlay    <= ovl_sync[1] ^ ovl_tog;
 		audio_boost    <= bst_sync;
 		status[2]      <= srv_sync[1]; // MiSTer status[2] = Service Mode
 		status[17:16]  <= bst_sync;    // MiSTer status[17:16] = Audio Boost
